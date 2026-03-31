@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import * as XLSX from "xlsx";
+import { PDFDocument } from "pdf-lib";
 import { supabase, isSupabaseConfigured } from "./supabase";
 
 const SK_API_KEY = "servial-anthropic-key";
@@ -19,47 +20,69 @@ const apiHeaders = () => ({
 });
 
 /* ── Función genérica callAI ── */
-const callAI = async (system, userContent, maxTokens = 4096, provider) => {
-  if (provider === "claude") {
-    const key = getApiKey();
-    if (!key) throw new Error("Cal configurar la API Key d'Anthropic (Claude).");
-    const messages = [{role: "user", content: userContent}];
-    const res = await fetch("https://api.anthropic.com/v1/messages", {
-      method: "POST",
-      headers: apiHeaders(),
-      body: JSON.stringify({ model: "claude-sonnet-4-6", system, messages, max_tokens: maxTokens }),
-    });
-    if (!res.ok) { const e = await res.text(); throw new Error(`Claude API HTTP ${res.status}: ${e}`); }
-    const data = await res.json();
-    return data.content.filter(b => b.type === "text").map(b => b.text).join("");
-  } else {
-    /* Gemini */
-    const key = getGeminiKey();
-    if (!key) throw new Error("Cal configurar la API Key de Google Gemini.");
-    const parts = Array.isArray(userContent)
-      ? userContent.map(b => {
-          if (b.type === "text") return { text: b.text };
-          if (b.type === "document" && b.source?.type === "base64") return { inline_data: { mime_type: b.source.media_type || "application/pdf", data: b.source.data } };
-          return { text: JSON.stringify(b) };
-        })
-      : [{ text: typeof userContent === "string" ? userContent : JSON.stringify(userContent) }];
-    const res = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${key}`,
-      {
+const callAI = async (system, userContent, maxTokens = 4096, provider, _retry = 0) => {
+  const MAX_RETRIES = 3;
+  try {
+    if (provider === "claude") {
+      const key = getApiKey();
+      if (!key) throw new Error("Cal configurar la API Key d'Anthropic (Claude).");
+      const messages = [{role: "user", content: userContent}];
+      const res = await fetch("https://api.anthropic.com/v1/messages", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          system_instruction: { parts: [{ text: system }] },
-          contents: [{ parts }],
-          generationConfig: { maxOutputTokens: maxTokens, temperature: 0.2 },
-        }),
+        headers: apiHeaders(),
+        body: JSON.stringify({ model: "claude-sonnet-4-20250514", system, messages, max_tokens: maxTokens }),
+      });
+      if ((res.status === 429 || res.status === 529) && _retry < MAX_RETRIES) {
+        const wait = res.status === 429 ? 65000 : 15000;
+        console.log(`Claude ${res.status}, reintentant en ${wait/1000}s (intent ${_retry+1}/${MAX_RETRIES})…`);
+        await new Promise(r => setTimeout(r, wait));
+        return callAI(system, userContent, maxTokens, provider, _retry + 1);
       }
-    );
-    if (!res.ok) { const e = await res.text(); throw new Error(`Gemini API HTTP ${res.status}: ${e}`); }
-    const data = await res.json();
-    const cand = data.candidates?.[0];
-    if (!cand) throw new Error("Gemini no ha retornat cap resposta.");
-    return cand.content?.parts?.map(p => p.text || "").join("") || "";
+      if (!res.ok) { const e = await res.text(); throw new Error(`Claude API HTTP ${res.status}: ${e}`); }
+      const data = await res.json();
+      return data.content.filter(b => b.type === "text").map(b => b.text).join("");
+    } else {
+      /* Gemini */
+      const key = getGeminiKey();
+      if (!key) throw new Error("Cal configurar la API Key de Google Gemini.");
+      const parts = Array.isArray(userContent)
+        ? userContent.map(b => {
+            if (b.type === "text") return { text: b.text };
+            if (b.type === "document" && b.source?.type === "base64") return { inline_data: { mime_type: b.source.media_type || "application/pdf", data: b.source.data } };
+            return { text: JSON.stringify(b) };
+          })
+        : [{ text: typeof userContent === "string" ? userContent : JSON.stringify(userContent) }];
+      const res = await fetch(
+        `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${key}`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            system_instruction: { parts: [{ text: system }] },
+            contents: [{ parts }],
+            generationConfig: { maxOutputTokens: maxTokens, temperature: 0.2 },
+          }),
+        }
+      );
+      if (res.status === 429 && _retry < MAX_RETRIES) {
+        const wait = 65000;
+        console.log(`Gemini 429, reintentant en ${wait/1000}s (intent ${_retry+1}/${MAX_RETRIES})…`);
+        await new Promise(r => setTimeout(r, wait));
+        return callAI(system, userContent, maxTokens, provider, _retry + 1);
+      }
+      if (!res.ok) { const e = await res.text(); throw new Error(`Gemini API HTTP ${res.status}: ${e}`); }
+      const data = await res.json();
+      const cand = data.candidates?.[0];
+      if (!cand) throw new Error("Gemini no ha retornat cap resposta.");
+      return cand.content?.parts?.map(p => p.text || "").join("") || "";
+    }
+  } catch(err) {
+    if ((err.message.includes("429") || err.message.includes("529")) && _retry < MAX_RETRIES) {
+      console.log(`Error ${err.message}, reintentant en 65s (intent ${_retry+1}/${MAX_RETRIES})…`);
+      await new Promise(r => setTimeout(r, 65000));
+      return callAI(system, userContent, maxTokens, provider, _retry + 1);
+    }
+    throw err;
   }
 };
 
@@ -70,6 +93,66 @@ const PROVINCIES = [
   { nom:"Tarragona", comarques:["Alt Camp","Baix Camp","Baix Ebre","Baix Penedès","Conca de Barberà","Montsià","Priorat","Ribera d'Ebre","Tarragonès","Terra Alta"]},
 ];
 const COMARQUES = PROVINCIES.flatMap(p => p.comarques);
+// Mapa comarca → municipis principals (per poder filtrar lloc_execucio que conté municipis, no comarques)
+const COMARCA_MUNICIPIS={
+  "Alt Penedès":["Vilafranca del Penedès","Sant Sadurní d'Anoia","Gelida","Sant Pere de Riudebitlles","Olèrdola","Santa Margarida i els Monjos","Subirats","Torrelavit","Font-rubí","Avinyonet del Penedès","Sant Martí Sarroca","Sant Quintí de Mediona","Mediona","La Granada","Sant Cugat Sesgarrigues","Les Cabanyes","Sant Llorenç d'Hortons","Pacs del Penedès","Castellví de la Marca","Castellet i la Gornal"],
+  "Anoia":["Igualada","Vilanova del Camí","Santa Margarida de Montbui","Piera","Masquefa","La Pobla de Claramunt","Capellades","Calaf","Òdena","Els Hostalets de Pierola","Jorba","El Bruc","Carme","Castellolí","Sant Martí de Tous","Copons","Montmaneu","La Torre de Claramunt","Rubió","Veciana"],
+  "Bages":["Manresa","Sant Joan de Vilatorrada","Sallent","Santpedor","Navàs","Sant Fruitós de Bages","Súria","Cardona","Artés","Moià","Callús","Fonollosa","Avinyó","Castellbell i el Vilar","Castellgalí","Rajadell","Sant Salvador de Guardiola","El Pont de Vilomara i Rocafort","Monistrol de Montserrat","Balsareny"],
+  "Baix Llobregat":["L'Hospitalet de Llobregat","Cornellà de Llobregat","El Prat de Llobregat","Sant Boi de Llobregat","Viladecans","Gavà","Esplugues de Llobregat","Sant Joan Despí","Sant Feliu de Llobregat","Molins de Rei","Sant Vicenç dels Horts","Castelldefels","Martorell","Sant Andreu de la Barca","Pallejà","Sant Just Desvern","Abrera","Olesa de Montserrat","Cervelló","Torrelles de Llobregat","Begues","Vallirana","Corbera de Llobregat","Santa Coloma de Cervelló","Collbató","Castellví de Rosanes","Sant Climent de Llobregat","La Palma de Cervelló","Sant Esteve Sesrovires"],
+  "Barcelonès":["Barcelona","L'Hospitalet de Llobregat","Badalona","Santa Coloma de Gramenet","Sant Adrià de Besòs"],
+  "Berguedà":["Berga","Gironella","Puig-reig","Avià","Casserres","Cercs","La Pobla de Lillet","Bagà","Olvan","Guardiola de Berguedà"],
+  "Garraf":["Vilanova i la Geltrú","Sitges","Sant Pere de Ribes","Cubelles","Canyelles","Olivella"],
+  "Maresme":["Mataró","Premià de Mar","El Masnou","Vilassar de Mar","Pineda de Mar","Arenys de Mar","Calella","Malgrat de Mar","Canet de Mar","Argentona","Sant Vicenç de Montalt","Premià de Dalt","Montgat","Alella","Vilassar de Dalt","Cabrera de Mar","Tiana","Sant Andreu de Llavaneres","Teià","Tordera","Santa Susanna","Palafolls","Sant Pol de Mar","Sant Cebrià de Vallalta","Caldes d'Estrac","Dosrius","Arenys de Munt","Sant Iscle de Vallalta","Òrrius","Cabrera de Mar"],
+  "Moianès":["Moià","Calders","Santa Maria d'Oló","Castellterçol","L'Estany","Collsuspina","Castellcir","Granera","Monistrol de Calders","Sant Quirze Safaja"],
+  "Osona":["Vic","Manlleu","Torelló","Centelles","Tona","Sant Pere de Torelló","Roda de Ter","Gurb","Sant Hipòlit de Voltregà","Tavertet","Les Masies de Voltregà","Santa Eugènia de Berga","Seva","Balenyà","Sant Julià de Vilatorta","Folgueroles","Lluçà","Prats de Lluçanès","Olost","Sant Bartomeu del Grau"],
+  "Vallès Occidental":["Terrassa","Sabadell","Rubí","Cerdanyola del Vallès","Montcada i Reixac","Sant Cugat del Vallès","Ripollet","Barberà del Vallès","Badia del Vallès","Castellar del Vallès","Sant Quirze del Vallès","Polinyà","Sentmenat","Santa Perpètua de Mogoda","Palau-solità i Plegamans","Viladecavalls","Matadepera","Ullastrell","Vacarisses","Rellinars","Gallifa","Sant Llorenç Savall"],
+  "Vallès Oriental":["Granollers","Mollet del Vallès","Sant Celoni","Parets del Vallès","Les Franqueses del Vallès","La Garriga","Cardedeu","La Llagosta","Caldes de Montbui","La Roca del Vallès","Llinars del Vallès","Sant Fost de Campsentelles","Montmeló","Montornès del Vallès","Canovelles","L'Ametlla del Vallès","Bigues i Riells","Santa Eulàlia de Ronçana","Vallromanes","Vilanova del Vallès","Sant Antoni de Vilamajor","Sant Pere de Vilamajor","Martorelles","Sant Feliu de Codines","Aiguafreda","Tagamanent","Figaró-Montmany"],
+  "Alt Empordà":["Figueres","Roses","Castelló d'Empúries","L'Escala","Llançà","Vilafant","Peralada","Sant Pere Pescador","La Jonquera","Cadaqués","El Port de la Selva","Vilajuïga","Navata"],
+  "Baix Empordà":["Palafrugell","La Bisbal d'Empordà","Sant Feliu de Guíxols","Torroella de Montgrí","Calonge i Sant Antoni","Palamós","Platja d'Aro","Begur","Pals","Forallac","Regencós","Corçà","Cruïlles","La Tallada d'Empordà"],
+  "Cerdanya":["Puigcerdà","Bellver de Cerdanya","Alp","Das","Fontanals de Cerdanya","Llívia","Bolvir","Ger","Guils de Cerdanya","Isòvol","Meranges","Prats i Sansor","Prullans","Riu de Cerdanya","Urús"],
+  "Garrotxa":["Olot","Sant Joan les Fonts","Besalú","Santa Pau","Les Preses","La Vall d'en Bas","Argelaguer","Tortellà","Castellfollit de la Roca","Sant Feliu de Pallerols","Riudaura","Mieres","Sant Jaume de Llierca","Montagut i Oix","Les Planes d'Hostoles"],
+  "Gironès":["Girona","Salt","Sarrià de Ter","Cassà de la Selva","Celrà","Quart","Fornells de la Selva","Llagostera","Bescanó","Sant Julià de Ramis","Vilablareix","Sant Gregori","Aiguaviva","Bordils","Cervià de Ter","Flaçà","Juià","Llambilles","Madremanya","Sant Joan de Mollet","Sant Jordi Desvalls","Sant Martí de Llémena","Sant Martí Vell"],
+  "Pla de l'Estany":["Banyoles","Porqueres","Cornellà del Terri","Crespià","Esponellà","Fontcoberta","Serinyà","Camós","Palol de Revardit"],
+  "Ripollès":["Ripoll","Sant Joan de les Abadesses","Campdevànol","Ribes de Freser","Camprodon","Llanars","Vallfogona de Ripollès","Molló","Setcases","Gombrèn","Les Llosses","Ogassa","Pardines","Planoles","Queralbs","Toses","Vilallonga de Ter"],
+  "Selva":["Blanes","Lloret de Mar","Santa Coloma de Farners","Tossa de Mar","Hostalric","Vidreres","Sils","Maçanet de la Selva","Arbúcies","Breda","Riells i Viabrea","Caldes de Malavella","Massanes","Anglès","Amer","Sant Hilari Sacalm"],
+  "Alt Urgell":["La Seu d'Urgell","Oliana","Organyà","Montferrer i Castellbò","Ribera d'Urgellet","Coll de Nargó","Alàs i Cerc","Bassella","Peramola","Pont de Bar"],
+  "Alta Ribagorça":["El Pont de Suert","Vilaller","La Vall de Boí"],
+  "Garrigues":["Les Borges Blanques","Juneda","L'Albi","Arbeca","Belianes","Cervià de les Garrigues","El Cogul","La Floresta","La Granadella","Granyena de les Garrigues"],
+  "Noguera":["Balaguer","Artesa de Segre","Camarasa","Cubells","Gerb","Os de Balaguer","Ponts","Térmens","Vallfogona de Balaguer","Vilanova de Meià"],
+  "Pallars Jussà":["Tremp","La Pobla de Segur","Isona i Conca Dellà","Salàs de Pallars","Sant Esteve de la Sarga","Talarn","La Torre de Cabdella","Sarroca de Bellera"],
+  "Pallars Sobirà":["Sort","Rialp","Llavorsí","Esterri d'Àneu","La Guingueta d'Àneu","Espot","Alt Àneu","Soriguera","Tírvia","Baix Pallars"],
+  "Pla d'Urgell":["Mollerussa","Bell-lloc d'Urgell","Fondarella","Golmés","Linyola","Miralcamp","El Palau d'Anglesola","Vila-sana","Torregrossa","Sidamon","Castellnou de Seana"],
+  "Segarra":["Cervera","Guissona","Sant Guim de Freixenet","Torà","Biosca","Ivorra","Les Oluges","Plans de Sió","Ribera d'Ondara","Sanaüja"],
+  "Segrià":["Lleida","Alcarràs","Almacelles","Aitona","Alcoletge","Alfarràs","Alguaire","Almenar","Benavent de Segrià","Corbins","Gimenells i el Pla de la Font","Rosselló","Seròs","Soses","Sudanell","Torrefarrera","Torres de Segre","La Granja d'Escarp"],
+  "Solsonès":["Solsona","Olius","Sant Llorenç de Morunys","Navès","Pinell de Solsonès","Clariana de Cardener","Riner","Castellar de la Ribera","La Coma i la Pedra","Lladurs","Pinós","La Molsosa"],
+  "Urgell":["Tàrrega","Agramunt","Bellpuig","Anglesola","Verdú","Vilagrassa","Os de Balaguer","Preixens"],
+  "Val d'Aran":["Vielha e Mijaran","Naut Aran","Les","Bossòst","Vilamòs","Es Bòrdes","Arres"],
+  "Alt Camp":["Valls","El Pla de Santa Maria","Alcover","Aiguamúrcia","Bràfim","Cabra del Camp","El Pont d'Armentera","Figuerola del Camp","La Masó","Nulles","Puigpelat","El Rourell","Vila-rodona","Vilabella"],
+  "Baix Camp":["Reus","Cambrils","Salou","Mont-roig del Camp","Riudoms","Vandellòs i l'Hospitalet de l'Infant","La Selva del Camp","Botarell","Castellvell del Camp","Les Borges del Camp","Montbrió del Camp","Pratdip","Vilanova d'Escornalbou","Vinyols i els Arcs"],
+  "Baix Ebre":["Tortosa","Deltebre","Roquetes","L'Ampolla","El Perelló","L'Aldea","Camarles","Paüls","Benifallet","Xerta","Tivenys","Aldover"],
+  "Baix Penedès":["El Vendrell","Calafell","Cunit","L'Arboç","Sant Jaume dels Domenys","Banyeres del Penedès","La Bisbal del Penedès","Bellvei","Llorenç del Penedès","Santa Oliva","Albinyana"],
+  "Conca de Barberà":["Montblanc","L'Espluga de Francolí","Santa Coloma de Queralt","Barberà de la Conca","Blancafort","Conesa","Forès","Llorac","Passanant i Belltall","Pira","Rocafort de Queralt","Sarral","Savallà del Comtat","Senan","Solivella","Vallclara","Vilanova de Prades","Vimbodí i Poblet"],
+  "Montsià":["Amposta","Sant Carles de la Ràpita","Alcanar","La Sénia","Ulldecona","Santa Bàrbara","Freginals","Godall","Mas de Barberans","Masdenverge"],
+  "Priorat":["Falset","Cornudella de Montsant","Marçà","El Masroig","Gratallops","La Morera de Montsant","Porrera","Bellmunt del Priorat","La Bisbal de Falset","Cabacés","Capçanes","El Lloar","El Molar","La Torre de Fontaubella","Torroja del Priorat","Ulldemolins","La Vilella Alta","La Vilella Baixa"],
+  "Ribera d'Ebre":["Móra d'Ebre","Móra la Nova","Flix","Ascó","Garcia","Ginestar","Miravet","Rasquera","Tivissa","La Torre de l'Espanyol","Vinebre"],
+  "Tarragonès":["Tarragona","Vila-seca","Torredembarra","Constantí","El Morell","La Pobla de Mafumet","Altafulla","Creixell","El Catllar","La Canonja","La Nou de Gaià","La Riera de Gaià","La Secuita","Perafort","Renau","Roda de Berà","El Vendrell","Vespella de Gaià","Vilallonga del Camp"],
+  "Terra Alta":["Gandesa","Batea","Bot","Caseres","Corbera d'Ebre","La Fatarella","Horta de Sant Joan","El Pinell de Brai","La Pobla de Massaluca","Prat de Comte","Vilalba dels Arcs"],
+};
+// Funció helper: donat un array de comarques seleccionades, retorna tots els termes a buscar (comarques + municipis + províncies)
+function getGeoTerms(selectedComarques){
+  const terms=new Set();
+  for(const c of selectedComarques){
+    terms.add(c.toLowerCase());
+    // Afegir municipis de la comarca
+    const munis=COMARCA_MUNICIPIS[c];
+    if(munis)for(const m of munis)terms.add(m.toLowerCase());
+  }
+  // Si totes les comarques d'una província estan seleccionades, afegir el nom de la província
+  for(const p of PROVINCIES){
+    if(p.comarques.every(c=>selectedComarques.includes(c)))terms.add(p.nom.toLowerCase());
+  }
+  return terms;
+}
 const CPV_GROUPS = [
   { label:"🏗️ Construcció general", items:[{code:"45000000",label:"45000000 – Construcció general"},{code:"45100000",label:"45100000 – Preparació del solar"},{code:"45110000",label:"45110000 – Demolicions i desmuntatges"},{code:"45111000",label:"45111000 – Treballs preparació de terrenys"},{code:"45112000",label:"45112000 – Excavació i terraplenament"}]},
   { label:"🏢 Edificació", items:[{code:"45200000",label:"45200000 – Edificis i eng. civil"},{code:"45210000",label:"45210000 – Construcció d'edificis"},{code:"45211000",label:"45211000 – Construcció d'habitatges"},{code:"45212000",label:"45212000 – Equipaments esportius i lleure"},{code:"45213000",label:"45213000 – Edificis comercials i industrials"},{code:"45214000",label:"45214000 – Edificis educatius"},{code:"45215000",label:"45215000 – Edificis sanitaris i socials"},{code:"45216000",label:"45216000 – Edificis serveis públics"},{code:"45260000",label:"45260000 – Cobertes"},{code:"45300000",label:"45300000 – Instal·lacions d'edificis"},{code:"45400000",label:"45400000 – Acabats d'edificis"},{code:"45410000",label:"45410000 – Arrebossats i enguixats"},{code:"45420000",label:"45420000 – Fusteria i ebenisteria"},{code:"45430000",label:"45430000 – Revestiments de sòls i parets"},{code:"45440000",label:"45440000 – Pintura i vidrieria"},{code:"45450000",label:"45450000 – Altres acabats"}]},
@@ -82,7 +165,7 @@ const CAT_LIMITS = {1:150000,2:360000,3:840000,4:2400000,5:5000000,6:null};
 const CAT_LABELS  = {1:"150.000 €",2:"360.000 €",3:"840.000 €",4:"2.400.000 €",5:"5.000.000 €",6:"Sense límit"};
 const SERVIAL_CLASS = {"A1":3,"C1":4,"C2":4,"C3":4,"C4":4,"C5":4,"C6":4,"C7":4,"C8":4,"C9":4,"E1":3,"E4":3,"E5":3,"E7":3,"G3":2,"G5":2,"G6":4,"K6":1};
 const SERVIAL_CLASS_LABELS = {"A1":"Desmuntatges i buidatges","C1":"Demolicions","C2":"Estructura fàbrica/formigó","C3":"Estructures metàl·liques","C4":"Paleta, estucats i revestiments","C5":"Pedrera i marbre","C6":"Paviments i enrajolats","C7":"Aïllaments i impermeabilitzacions","C8":"Fusteria","C9":"Tancaments metàl·lics","E1":"Abastaments i sanejaments","E4":"Sèquies i desguassos","E5":"Defenses de marges i canalitzacions","E7":"Obres hidràuliques s/q.e.","G3":"Ferms de formigó hidràulic","G5":"Senyalitzacions i abalisaments","G6":"Obres vials s/q.e.","K6":"Jardineria i plantacions"};
-const EMPTY_FILTERS = {importMin:"50000",importMax:"2400000",comarques:[],cpvCodes:[],paraulesClau:"",nomesPotPresentar:false,nomesSuperiors:false};
+const EMPTY_FILTERS = {importMin:"",importMax:"",comarques:[],cpvCodes:[],paraulesClau:"",nomesPotPresentar:false,nomesSuperiors:false};
 
 const SK = "servial-licitacions-v4";
 const SK_TIPUS = "servial-tipus-v1";
@@ -167,33 +250,96 @@ const addToCalendar = (l,setCal) => {
     .then(r=>r.json()).then(d=>{const t=(d.content&&d.content.find(b=>b.type==="text")||{}).text||"Event creat.";setCal("");alert(t);}).catch(er=>{setCal("");alert("Error: "+er.message);});
 };
 
-// ── CORRECCIÓ BUG CIDO: el body del correu arriba double-escaped des del MCP ─
+// ── Parser CIDO: extreu licitacions del correu HTML de sgsi.svcSam@diba.cat ──
 function parseCIDOHtml(rawBody){
   if(!rawBody)return[];
-  // Desescapa el double-escape: \\r\\n → \n, \\" → ", \\/ → /
   let body=rawBody;
   try{body=rawBody.replace(/\\r\\n/g,"\n").replace(/\\r/g,"").replace(/\\n/g,"\n").replace(/\\t/g,"\t").replace(/\\"/g,'"').replace(/\\\//g,"/").replace(/\\\\/g,"\\");}catch(e){}
+  const cleanHtml=t=>(t||"").replace(/<[^>]+>/g,"").replace(/&amp;/g,"&").replace(/&lt;/g,"<").replace(/&gt;/g,">").replace(/&nbsp;/g," ").replace(/&#39;/g,"'").replace(/&quot;/g,'"').replace(/&[a-z]+;/g," ").replace(/\s+/g," ").trim();
   const licitacions=[];
-  const tdRx=/<td[^>]*>([\s\S]*?)<\/td>/gi;
-  const tds=[];let m;
-  while((m=tdRx.exec(body))!==null)tds.push(m[1]);
-  let i=0;
-  while(i<tds.length){
-    const clean=tds[i].replace(/<[^>]+>/g,"").replace(/&amp;/g,"&").replace(/&lt;/g,"<").replace(/&gt;/g,">").replace(/&nbsp;/g," ").replace(/&#39;/g,"'").replace(/&quot;/g,'"').replace(/&[a-z]+;/g," ").replace(/\s+/g," ").trim();
-    if(i+1<tds.length){
-      const urlM=tds[i+1].match(/href="(https?:\/\/cido\.diba\.cat\/contractacio\/[^"]+)"/);
-      if(urlM&&clean&&clean.length>3&&!clean.includes("<")){
-        const titleM=tds[i+1].match(/href="[^"]*"[^>]*>([\s\S]*?)<\/a>/);
-        if(titleM){
-          let title=titleM[1].replace(/<[^>]+>/g,"").replace(/\s+/g," ").trim();
-          title=title.replace(/&amp;/g,"&").replace(/&#39;/g,"'").replace(/&quot;/g,'"').replace(/&[a-z]+;/g," ");
-          if(title){licitacions.push({organisme:clean,titol:title,url:urlM[1].split("?")[0]});i+=2;continue;}
-        }
-      }
+  // Strategy 1: Find all item__descr blocks with CIDO links
+  const descrRx=/<p[^>]*class="[^"]*item__descr[^"]*"[^>]*>\s*<a\s+href="(https?:\/\/cido\.diba\.cat\/contractacio\/[^"?]+)[^"]*"[^>]*>([\s\S]*?)<\/a>/gi;
+  let m;
+  while((m=descrRx.exec(body))!==null){
+    const url=m[1];
+    const title=cleanHtml(m[2]);
+    if(!title||title.length<3)continue;
+    // Look backwards for org name in preceding <td> that contains plain text (no item__descr)
+    const before=body.substring(Math.max(0,m.index-2000),m.index);
+    const orgMatch=before.match(/<td[^>]*>\s*([^<]{3,}?)\s*<\/td>\s*(?:<\/tr>[\s\S]*?<tr[^>]*>[\s\S]*?)?$/i);
+    const organisme=orgMatch?cleanHtml(orgMatch[1]):"";
+    licitacions.push({organisme,titol:title,url});
+  }
+  // Strategy 2 fallback: find all href to cido.diba.cat/contractacio
+  if(licitacions.length===0){
+    const linkRx=/<a\s+href="(https?:\/\/cido\.diba\.cat\/contractacio\/[^"?]+)[^"]*"[^>]*>([\s\S]*?)<\/a>/gi;
+    while((m=linkRx.exec(body))!==null){
+      const url=m[1];
+      const title=cleanHtml(m[2]);
+      if(title&&title.length>3)licitacions.push({organisme:"",titol:title,url});
     }
-    i++;
   }
   return licitacions;
+}
+
+/* ── Helpers Gmail API ── */
+function extractGmailHtmlBody(payload){
+  // Gmail messages can have nested parts
+  if(payload.mimeType==="text/html"&&payload.body?.data){
+    return atob(payload.body.data.replace(/-/g,"+").replace(/_/g,"/"));
+  }
+  if(payload.parts){
+    for(const part of payload.parts){
+      const result=extractGmailHtmlBody(part);
+      if(result)return result;
+    }
+  }
+  // Fallback: try plain text
+  if(payload.mimeType==="text/plain"&&payload.body?.data){
+    return atob(payload.body.data.replace(/-/g,"+").replace(/_/g,"/"));
+  }
+  return null;
+}
+
+function parseGencatToResults(html){
+  // Parse plataforma.contractacio@gencat.cat emails
+  // These emails contain licitació notifications with links to contractaciopublica.cat
+  const results=[];
+  if(!html)return results;
+  // Look for links to contractaciopublica.cat
+  const linkRx=/<a[^>]*href=["']([^"']*contractaciopublica\.cat[^"']*)["'][^>]*>([\s\S]*?)<\/a>/gi;
+  let m;
+  while((m=linkRx.exec(html))!==null){
+    const url=m[1].replace(/&amp;/g,"&");
+    const text=m[2].replace(/<[^>]+>/g,"").replace(/&[a-z]+;/g," ").replace(/\s+/g," ").trim();
+    if(text.length>10&&!text.includes("Dessubscriure")&&!text.includes("baixa")){
+      results.push({expedient:"",objecte:text,organisme:"",import_eur:0,data_publicacio:new Date().toLocaleDateString("ca-ES"),termini:"",cpv:"45000000",comarca_municipi:"",tipologia:"",font:"Gencat",classificacio_requerida:[],puntuacio:6,justificacio:"📧 Correu Gencat",url});
+    }
+  }
+  // If no contractaciopublica links, try generic parsing like CIDO
+  if(results.length===0){
+    const blockRx=/item__title[^>]*>([^<]+)<[\s\S]*?item__descr[^>]*>([\s\S]*?)<\/td>/g;
+    while((m=blockRx.exec(html))!==null){
+      const org=m[1].trim();
+      const content=m[2].replace(/<[^>]+>/g," ").replace(/&[a-z]+;/g," ").replace(/\s+/g," ").trim();
+      if(org&&content.length>5){
+        const urlM=m[2].match(/href=["']([^"']+)["']/);
+        results.push({expedient:"",objecte:content.slice(0,300),organisme:org,import_eur:0,data_publicacio:new Date().toLocaleDateString("ca-ES"),termini:"",cpv:"45000000",comarca_municipi:"",tipologia:"",font:"Gencat",classificacio_requerida:[],puntuacio:6,justificacio:"📧 Correu Gencat",url:urlM?urlM[1]:""});
+      }
+    }
+  }
+  // Filter only construction-related
+  const paraules=["obres","obra","construcció","construccio","reforma","rehabilitació","rehabilitacio","urbanització","urbanitzacio","paviment","reurbanitz","condicionament","enderroc","sanejament","col·lector","canonada","pont","vestidor","edifici","local","equipament","instal·lació","instal·lacions","adequació","adequacio","millora","ampliació","ampliacio","substitució","substitucio","impermeabilitz","drenatge","clavegueram","xarxa","vial","asfalt","demolició","demolicio","mur","coberta","façana","facana","forjat","fonament","estructura","terraplenat","esplanada","ferm"];
+  const norm=s=>s.normalize("NFC").replace(/\s+/g," ").trim().toLowerCase();
+  const filtered=results.filter(r=>{
+    const t=norm(r.objecte||"");
+    if(t.includes("subministrament")||t.includes("suministro"))return false;
+    if(/servei/.test(t))return false;
+    if(/servicio/.test(t))return false;
+    if(t.includes("consultoria")||t.includes("assessorament")||t.includes("formaci"))return false;
+    return true;
+  });
+  return filtered;
 }
 
 function FR({label,span2,children}){return(<div className={span2?"col-span-2":""}><label className="text-xs font-semibold text-gray-500 uppercase tracking-wide">{label}</label><div className="mt-0.5">{children}</div></div>);}
@@ -347,7 +493,11 @@ function GestorTab({refreshKey=0}){
           <FR label="Client"><input className={inp} value={form.client} onChange={e=>setForm({...form,client:e.target.value})} /></FR>
           <FR label="Poblacio"><input className={inp} value={form.poblacio} onChange={e=>setForm({...form,poblacio:e.target.value})} /></FR>
           <FR label="Estat"><select className={inp} value={form.estat} onChange={e=>setForm({...form,estat:e.target.value})}>{ESTATS.map(s=><option key={s}>{s}</option>)}</select></FR>
-          <FR label="Data Presentacio"><input className={inp} value={form.data_presentacio} placeholder="DD/MM/YYYY HH:MM" onChange={e=>setForm({...form,data_presentacio:e.target.value})} /></FR>
+          <FR label="Data Presentació"><div className="flex gap-2">
+            <input type="datetime-local" className={inp+" flex-1"} value={(()=>{const v=form.data_presentacio||"";const m=v.match(/(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})\s*(\d{1,2}):?(\d{2})?/);if(m)return`${m[3]}-${m[2].padStart(2,"0")}-${m[1].padStart(2,"0")}T${m[4].padStart(2,"0")}:${(m[5]||"00").padStart(2,"0")}`;return"";})()}
+              onChange={e=>{const d=e.target.value;if(!d){setForm({...form,data_presentacio:""});return;}const dt=new Date(d);const formatted=`${String(dt.getDate()).padStart(2,"0")}/${String(dt.getMonth()+1).padStart(2,"0")}/${dt.getFullYear()} ${String(dt.getHours()).padStart(2,"0")}:${String(dt.getMinutes()).padStart(2,"0")}`;setForm({...form,data_presentacio:formatted});}} />
+            <input className={inp+" flex-1"} value={form.data_presentacio} placeholder="Text lliure o DD/MM/YYYY HH:MM" onChange={e=>setForm({...form,data_presentacio:e.target.value})} />
+          </div></FR>
           <FR label="Termini Execucio"><input className={inp} value={form.termini} placeholder="p.ex. 8 mesos" onChange={e=>setForm({...form,termini:e.target.value})} /></FR>
           <FR label="Import PEC s/IVA"><input type="number" className={inp} value={form.import_pec_sense_iva} onChange={e=>setForm({...form,import_pec_sense_iva:e.target.value})} /></FR>
           <FR label="Classificacio"><input className={inp} value={form.classificacio} placeholder="p.ex. C-2-3" onChange={e=>setForm({...form,classificacio:e.target.value})} /></FR>
@@ -368,7 +518,7 @@ function GestorTab({refreshKey=0}){
       {showDup&&(<div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4"><div className="bg-stone-50 rounded-2xl shadow-2xl w-full max-w-2xl flex flex-col" style={{maxHeight:"90vh"}}><div className="flex items-center justify-between px-5 py-4 border-b"><h3 className="font-bold text-gray-900">Gestio de duplicats</h3><button onClick={()=>{setShowDup(false);setDelId(null);}} className="text-gray-400 hover:text-gray-600 text-2xl">×</button></div><div className="overflow-y-auto flex-1 p-4 space-y-4">{dupPairs.length===0?<p className="text-center text-gray-400 py-8">No s'han detectat duplicats.</p>:dupPairs.map((pair,pi)=>(<div key={pi} className="border border-orange-200 rounded-xl overflow-hidden"><div className="bg-orange-50 px-3 py-1.5 text-xs font-semibold text-orange-700">Similitud: {pair.s}%</div><div className="grid grid-cols-2 divide-x divide-gray-200">{[pair.a,pair.b].map(l=>(<div key={l.id} className="p-3"><div className="text-xs space-y-1 mb-3"><div className="font-semibold text-gray-800">{l.licitacio||"---"}</div><div className="text-gray-500">{l.client||"---"}</div>{l.codi_obra&&<div className="font-mono text-blue-600">{l.codi_obra}</div>}<span className={"inline-block px-1.5 py-0.5 rounded-full text-xs font-semibold "+(EC[l.estat]||"bg-gray-100 text-gray-600")}>{l.estat}</span></div>{delId===l.id?<div className="flex gap-1"><button className="flex-1 py-1.5 bg-gray-200 text-gray-700 text-xs font-bold rounded-lg" onClick={()=>setDelId(null)}>Cancel</button><button className="flex-1 py-1.5 bg-red-600 text-white text-xs font-bold rounded-lg" onClick={()=>{const id=l.id;setLic(cur=>cur.filter(x=>x.id!==id));supabase.from("licitacions").delete().eq("id",id).catch(()=>{});setDelId(null);setShowDup(false);}}>Confirmar</button></div>:<button className="w-full py-1.5 bg-red-500 hover:bg-red-600 text-white text-xs font-bold rounded-lg" onClick={()=>setDelId(l.id)}>Eliminar aquest</button>}</div>))}</div></div>))}</div><div className="px-5 py-3 border-t"><button onClick={()=>{setShowDup(false);setDelId(null);}} className="w-full py-2 border rounded-xl text-sm text-gray-600 hover:bg-gray-50">Tancar</button></div></div></div>)}
       {confModal&&(<div className="fixed inset-0 bg-black bg-opacity-40 flex items-center justify-center z-50"><div className="bg-stone-50 rounded-2xl shadow-2xl p-6 max-w-sm w-full mx-4"><div className="text-2xl mb-2 text-center">📋</div><h3 className="text-base font-bold text-gray-900 text-center mb-1">Assignar Codi d'Obra</h3><p className="text-sm text-gray-500 text-center mb-4">En passar a EN ESTUDI s'assignara el codi:</p><div className="bg-gray-50 border-2 border-blue-200 rounded-xl py-3 text-center mb-3"><span className="text-2xl font-mono font-bold text-blue-700">{confModal.code}</span></div><input className="w-full border rounded-lg px-3 py-1.5 text-sm font-mono text-center mb-4" value={confModal.code} onChange={e=>setConfModal({...confModal,code:e.target.value})} /><div className="flex gap-2"><button onClick={()=>setConfModal(null)} className="flex-1 px-4 py-2.5 border rounded-xl text-sm text-gray-600">Cancel</button><button onClick={confirmEstat} className="flex-1 px-4 py-2.5 bg-blue-600 hover:bg-blue-700 text-white font-bold rounded-xl text-sm">Confirmar</button></div></div></div>)}
       <div className="flex items-center justify-between mb-3">
-        <div><h2 className="text-xl font-bold text-gray-900">Licitacions Servial 2026</h2><p className="text-xs text-gray-400">Gestio d'ofertes publiques i privades</p></div>
+        <div><h2 className="text-xl font-bold text-gray-900">SERVIAL. Licitacions d'edificació. Any 2026</h2></div>
         <div className="flex gap-2 flex-wrap items-center" onClick={e=>e.stopPropagation()}>
           <button onClick={()=>{setForm(emptyForm);setEditId(null);setAnalisi("");setView("form");}} className="bg-blue-600 hover:bg-blue-700 text-white text-sm font-semibold px-3 py-2 rounded-lg">+ Manual</button>
           <button onClick={()=>setShowTipusSettings(true)} className="bg-gray-500 hover:bg-gray-600 text-white text-sm font-semibold px-3 py-2 rounded-lg">⚙️</button>
@@ -393,7 +543,7 @@ function GestorTab({refreshKey=0}){
       </div>
       {calSt&&<div className="mb-2 px-3 py-2 bg-blue-50 border border-blue-200 rounded-lg text-sm text-blue-700">{calSt}</div>}
       {filtered.length===0?<div className="text-center py-16 text-gray-400"><div className="text-4xl mb-2">📋</div><div className="font-semibold">{lic.length===0?"Cap licitacio":"Cap resultat"}</div></div>
-        :<div className="overflow-x-auto rounded-xl border border-gray-200 shadow-sm"><table className="text-xs" style={{minWidth:"1510px"}}><thead><tr className="bg-gray-50 border-b border-gray-200 text-gray-500 uppercase">{[["Codi Obra","90px"],["Licitacio","280px"],["Client","180px"],["P/P","60px"],["Poblacio","120px"],["Estat","110px"],["Data Present.","120px"],["Termini","80px"],["Import s/IVA","110px"],["Classif.","80px"],["Criteris","200px"],["Tècnica","65px"],["Aval","70px"],["Comentaris","220px"],["🔗 Obra","35px"],["🌐 Publicació","35px"],["","70px"]].map(([h,w])=><th key={h} style={{minWidth:w,width:w}} className="px-2 py-2 text-left font-semibold whitespace-nowrap">{h}</th>)}</tr></thead><tbody className="divide-y divide-gray-100">{filtered.map(l=>(<tr key={l.id} className="hover:bg-gray-50 align-top"><td className="px-2 py-2 font-mono text-gray-600 whitespace-nowrap">{l.codi_obra||"---"}</td><td className="px-2 py-2 font-medium text-gray-800"><div title={l.licitacio}>{l.licitacio||"---"}</div></td><td className="px-2 py-2 text-gray-700">{l.client||"---"}</td><td className="px-2 py-2"><select value={l.public_privat||tipus[0]} className={"text-xs font-semibold px-1.5 py-0.5 rounded border-0 cursor-pointer "+(l.public_privat===tipus[0]?"bg-blue-100 text-blue-700":"bg-orange-100 text-orange-700")} onChange={e=>{const updated={...l,public_privat:e.target.value};save(lic.map(x=>x.id===l.id?updated:x));saveOne(updated);}}>{tipus.map(t=><option key={t}>{t}</option>)}</select></td><td className="px-2 py-2 text-gray-600">{l.poblacio||"---"}</td><td className="px-2 py-2"><select value={l.estat} className={"text-xs font-semibold px-1.5 py-0.5 rounded-full border-0 cursor-pointer "+(EC[l.estat]||"bg-gray-100 text-gray-600")} onChange={e=>onEstat(l.id,e.target.value)}>{ESTATS.map(s=><option key={s}>{s}</option>)}</select></td><td className="px-2 py-2 text-gray-600">{l.data_presentacio||"---"}</td><td className="px-2 py-2 text-gray-600">{l.termini||"---"}</td><td className="px-2 py-2 text-right font-medium text-gray-800 whitespace-nowrap">{l.import_pec_sense_iva?fmt(l.import_pec_sense_iva):"---"}</td><td className="px-2 py-2 font-mono">{l.classificacio||"---"}</td><td className="px-2 py-2 text-gray-600">{l.criteris_puntuacio||"---"}</td><td className="px-2 py-2">{(()=>{const priv=(l.public_privat||tipus[0])!==tipus[0];if(priv)return <span className="text-xs text-gray-300">—</span>;const val=l.tecnica!=null?l.tecnica:(l.criteris_puntuacio&&/100\s*%?\s*(auto|sobre)/i.test(l.criteris_puntuacio)?false:true);return <select value={val?"Sí":"No"} className={"text-xs font-semibold px-1.5 py-0.5 rounded border-0 cursor-pointer "+(val?"bg-amber-100 text-amber-700":"bg-green-100 text-green-700")} onChange={e=>{const updated={...l,tecnica:e.target.value==="Sí"};save(lic.map(x=>x.id===l.id?updated:x));saveOne(updated);}}><option>Sí</option><option>No</option></select>})()}</td><td className="px-2 py-2 text-gray-600">{l.aval||"---"}</td><td className="px-2 py-2 text-gray-600">{l.comentaris||"---"}</td><td className="px-2 py-2">{l.link_obra?<a href={l.link_obra} target="_blank" rel="noreferrer" className="text-blue-500 hover:text-blue-700">🔗</a>:"---"}</td><td className="px-2 py-2">{l.link_publicacio?<a href={l.link_publicacio} target="_blank" rel="noreferrer" className="text-green-500 hover:text-green-700">🌐</a>:"---"}</td><td className="px-2 py-2 whitespace-nowrap">{parseDT(l.data_presentacio)&&<button onClick={()=>addToCalendar(l,setCalSt)} title="Google Calendar" className="text-blue-400 hover:text-blue-600 mr-1">📅</button>}<button onClick={()=>onEdit(l)} className="text-blue-500 hover:text-blue-700 mr-1">✏️</button><button onClick={()=>onDel(l.id)} className="text-red-400 hover:text-red-600">🗑️</button></td></tr>))}</tbody></table></div>}
+        :<div className="overflow-x-auto rounded-xl border border-gray-200 shadow-sm"><table className="text-xs" style={{minWidth:"1900px"}}><thead><tr className="bg-gray-50 border-b border-gray-200 text-gray-500 uppercase">{[["Codi Obra","90px"],["Licitacio","280px"],["Client","180px"],["P/P","60px"],["Poblacio","120px"],["Estat","110px"],["Data Present.","160px"],["Termini","80px"],["Import s/IVA","110px"],["Classif.","80px"],["Criteris","200px"],["Tècnica","65px"],["Aval","70px"],["Comentaris","280px"],["🔗 Obra","80px"],["🌐 Publicació","80px"],["","70px"]].map(([h,w])=><th key={h} style={{minWidth:w,width:w}} className="px-2 py-2 text-left font-semibold whitespace-nowrap">{h}</th>)}</tr></thead><tbody className="divide-y divide-gray-100">{filtered.map(l=>(<tr key={l.id} className="hover:bg-gray-50 align-top"><td className="px-2 py-2 font-mono text-gray-600 whitespace-nowrap">{l.codi_obra||"---"}</td><td className="px-2 py-2 font-medium text-gray-800"><div title={l.licitacio}>{l.licitacio||"---"}</div></td><td className="px-2 py-2 text-gray-700">{l.client||"---"}</td><td className="px-2 py-2"><select value={l.public_privat||tipus[0]} className={"text-xs font-semibold px-1.5 py-0.5 rounded border-0 cursor-pointer "+(l.public_privat===tipus[0]?"bg-blue-100 text-blue-700":"bg-orange-100 text-orange-700")} onChange={e=>{const updated={...l,public_privat:e.target.value};save(lic.map(x=>x.id===l.id?updated:x));saveOne(updated);}}>{tipus.map(t=><option key={t}>{t}</option>)}</select></td><td className="px-2 py-2 text-gray-600">{l.poblacio||"---"}</td><td className="px-2 py-2"><select value={l.estat} className={"text-xs font-semibold px-1.5 py-0.5 rounded-full border-0 cursor-pointer "+(EC[l.estat]||"bg-gray-100 text-gray-600")} onChange={e=>onEstat(l.id,e.target.value)}>{ESTATS.map(s=><option key={s}>{s}</option>)}</select></td><td className="px-2 py-2 text-gray-600"><div className="flex flex-col gap-1"><input type="datetime-local" className="text-xs border rounded px-1 py-0.5 w-full" value={(()=>{const v=l.data_presentacio||"";const m=v.match(/(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})\s*(\d{1,2}):?(\d{2})?/);if(m)return`${m[3]}-${m[2].padStart(2,"0")}-${m[1].padStart(2,"0")}T${m[4].padStart(2,"0")}:${(m[5]||"00").padStart(2,"0")}`;return"";})()} onChange={e=>{const d=e.target.value;if(!d)return;const dt=new Date(d);const formatted=`${String(dt.getDate()).padStart(2,"0")}/${String(dt.getMonth()+1).padStart(2,"0")}/${dt.getFullYear()} ${String(dt.getHours()).padStart(2,"0")}:${String(dt.getMinutes()).padStart(2,"0")}`;const updated={...l,data_presentacio:formatted};save(lic.map(x=>x.id===l.id?updated:x));saveOne(updated);}} /><input className="text-xs border rounded px-1 py-0.5 w-full" defaultValue={l.data_presentacio||""} placeholder="Text lliure" key={l.id+"-dp-"+l.data_presentacio} onBlur={e=>{const nv=e.target.value;if(nv!==(l.data_presentacio||"")){const updated={...l,data_presentacio:nv};save(lic.map(x=>x.id===l.id?updated:x));saveOne(updated);}}}/></div></td><td className="px-2 py-2 text-gray-600">{l.termini||"---"}</td><td className="px-2 py-2 text-right font-medium text-gray-800 whitespace-nowrap">{l.import_pec_sense_iva?fmt(l.import_pec_sense_iva):"---"}</td><td className="px-2 py-2 font-mono">{l.classificacio||"---"}</td><td className="px-2 py-2 text-gray-600">{l.criteris_puntuacio||"---"}</td><td className="px-2 py-2">{(()=>{const priv=(l.public_privat||tipus[0])!==tipus[0];if(priv)return <span className="text-xs text-gray-300">—</span>;const val=l.tecnica!=null?l.tecnica:(l.criteris_puntuacio&&/100\s*%?\s*(auto|sobre)/i.test(l.criteris_puntuacio)?false:true);return <select value={val?"Sí":"No"} className={"text-xs font-semibold px-1.5 py-0.5 rounded border-0 cursor-pointer "+(val?"bg-amber-100 text-amber-700":"bg-green-100 text-green-700")} onChange={e=>{const updated={...l,tecnica:e.target.value==="Sí"};save(lic.map(x=>x.id===l.id?updated:x));saveOne(updated);}}><option>Sí</option><option>No</option></select>})()}</td><td className="px-2 py-2 text-gray-600">{l.aval||"---"}</td><td className="px-2 py-2"><textarea rows={3} className="text-xs border rounded px-1 py-0.5 w-full resize-y" value={l.comentaris||""} placeholder="Comentaris" onBlur={e=>{if(e.target.value!==(l.comentaris||"")){const updated={...l,comentaris:e.target.value};save(lic.map(x=>x.id===l.id?updated:x));saveOne(updated);}}} onChange={e=>{save(lic.map(x=>x.id===l.id?{...l,comentaris:e.target.value}:x));}}/></td><td className="px-2 py-2"><div className="flex items-center gap-1">{l.link_obra&&<a href={l.link_obra} target="_blank" rel="noreferrer" className="text-blue-500 hover:text-blue-700" title={l.link_obra}>🔗</a>}<input className="text-xs border rounded px-1 py-0.5 w-full" value={l.link_obra||""} placeholder="URL carpeta" onBlur={e=>{if(e.target.value!==(l.link_obra||"")){const updated={...l,link_obra:e.target.value};save(lic.map(x=>x.id===l.id?updated:x));saveOne(updated);}}} onChange={e=>{save(lic.map(x=>x.id===l.id?{...l,link_obra:e.target.value}:x));}}/></div></td><td className="px-2 py-2"><div className="flex items-center gap-1">{l.link_publicacio&&<a href={l.link_publicacio} target="_blank" rel="noreferrer" className="text-green-500 hover:text-green-700" title={l.link_publicacio}>🌐</a>}<input className="text-xs border rounded px-1 py-0.5 w-full" value={l.link_publicacio||""} placeholder="URL publicació" onBlur={e=>{if(e.target.value!==(l.link_publicacio||"")){const updated={...l,link_publicacio:e.target.value};save(lic.map(x=>x.id===l.id?updated:x));saveOne(updated);}}} onChange={e=>{save(lic.map(x=>x.id===l.id?{...l,link_publicacio:e.target.value}:x));}}/></div></td><td className="px-2 py-2 whitespace-nowrap">{parseDT(l.data_presentacio)&&<button onClick={()=>addToCalendar(l,setCalSt)} title="Google Calendar" className="text-blue-400 hover:text-blue-600 mr-1">📅</button>}<button onClick={()=>onEdit(l)} className="text-blue-500 hover:text-blue-700 mr-1">✏️</button><button onClick={()=>onDel(l.id)} className="text-red-400 hover:text-red-600">🗑️</button></td></tr>))}</tbody></table></div>}
       <div className="mt-2 text-xs text-gray-400 text-right">{filtered.length} de {lic.length} licitacions — Sincronitzat amb Supabase</div>
     </div>
   );
@@ -428,8 +578,21 @@ export default function App(){
   const [plecRawText,setPlecRawText]=useState("");
   const [plecView,setPlecView]=useState("taula");
   const [plecSavedMsg,setPlecSavedMsg]=useState("");
+  const [plecHistorial,setPlecHistorial]=useState([]);
+  const [plecHistorialOpen,setPlecHistorialOpen]=useState(false);
+  useEffect(()=>{
+    supabase.from("plec_historial").select("*").order("created_at",{ascending:false}).limit(15)
+      .then(({data,error})=>{if(!error&&data)setPlecHistorial(data.map(d=>({id:d.id,nom:d.nom,date:d.date,results:d.results,rawText:d.raw_text})));});
+    // Migrar localStorage a Supabase si hi ha dades locals
+    try{const h=localStorage.getItem("servial-plec-historial");if(h){const local=JSON.parse(h);if(local.length>0){Promise.all(local.map(e=>supabase.from("plec_historial").upsert({id:e.id,nom:e.nom,date:e.date,results:e.results,raw_text:e.rawText},{onConflict:"id"}))).then(()=>{localStorage.removeItem("servial-plec-historial");supabase.from("plec_historial").select("*").order("created_at",{ascending:false}).limit(15).then(({data})=>{if(data)setPlecHistorial(data.map(d=>({id:d.id,nom:d.nom,date:d.date,results:d.results,rawText:d.raw_text})));});});}}}catch(e){}
+  },[]);
+  const guardarPlecHistorial=async(nom,results,rawText)=>{const r=results?.[0]||{};const label=[r.objecte,r.organisme,nom].filter(Boolean).join(" — ")||"Sense nom";const entry={id:Date.now(),nom:label,date:new Date().toLocaleDateString("ca-ES"),results,raw_text:rawText};await supabase.from("plec_historial").upsert(entry,{onConflict:"id"});const{data}=await supabase.from("plec_historial").select("*").order("created_at",{ascending:false}).limit(15);if(data)setPlecHistorial(data.map(d=>({id:d.id,nom:d.nom,date:d.date,results:d.results,rawText:d.raw_text})));};
+  const eliminarPlecHistorial=async(id)=>{await supabase.from("plec_historial").delete().eq("id",id);setPlecHistorial(prev=>prev.filter(h=>h.id!==id));};
   const [showCidoImport,setShowCidoImport]=useState(false);
   const [cidoHtml,setCidoHtml]=useState("");
+  const [gmailToken,setGmailToken]=useState(null);
+  const [gmailConnected,setGmailConnected]=useState(false);
+  const [gmailUser,setGmailUser]=useState("");
   const [cidoCount,setCidoCount]=useState(()=>{try{const c=localStorage.getItem("servial-cido-cache");if(c){const d=JSON.parse(c);if(d.date===new Date().toLocaleDateString("ca-ES"))return d.results.length;}return null;}catch(e){return null;}});
   const [gestorRefreshKey,setGestorRefreshKey]=useState(0);
   const [apiKeyInput,setApiKeyInput]=useState(()=>getApiKey());
@@ -446,11 +609,21 @@ export default function App(){
   const parseCIDOToResults=useCallback((html)=>{
     const licitacions=parseCIDOHtml(html);
     if(!licitacions.length)return[];
-    const paraules=["obres","obra","construcció","construccio","reforma","rehabilitació","rehabilitacio","urbanització","urbanitzacio","paviment","reurbanitz","condicionament","enderroc","sanejament","col·lector","canonada","pont","vestidor","edifici","local","equipament","instal·lació"];
-    const exclou=["servei de ","assistència tècnica","redacció del projecte","subministrament de material","audiovisual","formació en","assegurances","impressió","fotogràfic","seguretat de la informació","distribució i muntatge","dinamització","consultoria"];
-    const obres=licitacions.filter(l=>{const t=l.titol.toLowerCase();return paraules.some(p=>t.includes(p))&&!exclou.some(e=>t.includes(e));});
-    const llista=obres.length>0?obres:licitacions.slice(0,50);
-    return llista.map(l=>({expedient:"",objecte:l.titol,organisme:l.organisme,import_eur:0,data_publicacio:new Date().toLocaleDateString("ca-ES"),termini:"",cpv:"45000000",comarca_municipi:"",tipologia:"",font:"CIDO-DIBA",classificacio_requerida:[],puntuacio:6,justificacio:"CIDO correu",url:l.url}));
+    const paraules=["obres","obra","construcció","construccio","reforma","rehabilitació","rehabilitacio","urbanització","urbanitzacio","paviment","reurbanitz","condicionament","enderroc","sanejament","col·lector","canonada","pont","vestidor","edifici","local","equipament","instal·lació","instal·lacions","adequació","adequacio","millora","ampliació","ampliacio","substitució","substitucio","impermeabilitz","drenatge","clavegueram","xarxa","vial","asfalt","demolició","demolicio","mur","coberta","façana","facana","forjat","fonament","estructura","terraplenat","esplanada","ferm"];
+    // Normalitza text: elimina accents codificats malament (Ã³→ó, etc.) i normalitza espais
+    const norm=s=>s.normalize("NFC").replace(/\s+/g," ").trim().toLowerCase();
+    const obres=licitacions.filter(l=>{
+      const t=norm(l.titol);
+      // Exclou si conté "subministrament" o "suministro" en qualsevol posició
+      if(t.includes("subministrament")||t.includes("suministro")||t.includes("subministrament"))return false;
+      // Exclou si conté "serveis" o "servei" seguit de qualsevol cosa (no obres)
+      if(/servei/.test(t))return false;
+      if(/servicio/.test(t))return false;
+      // Exclou altres tipus no-obra
+      if(t.includes("consultoria")||t.includes("assessorament")||t.includes("formaci"))return false;
+      return true;
+    });
+    return obres.map(l=>({expedient:"",objecte:l.titol,organisme:l.organisme,import_eur:0,data_publicacio:new Date().toLocaleDateString("ca-ES"),termini:"",cpv:"45000000",comarca_municipi:l.organisme||"",tipologia:"",font:"CIDO-DIBA",classificacio_requerida:[],puntuacio:6,justificacio:"📧 CIDO correu",url:l.url}));
   },[]);
 
   const SK_CIDO="servial-cido-cache";
@@ -466,15 +639,90 @@ export default function App(){
     setShowCidoImport(false);
   },[cidoHtml,parseCIDOToResults]);
 
+  /* ── Google OAuth + Gmail API directa (gratuït) ── */
+  const connectGmail=useCallback(()=>{
+    const clientId=import.meta.env.VITE_GOOGLE_CLIENT_ID;
+    if(!clientId||!window.google?.accounts?.oauth2){alert("Google Identity Services no carregat. Recarrega la pàgina.");return;}
+    const client=window.google.accounts.oauth2.initTokenClient({
+      client_id:clientId,
+      scope:"https://www.googleapis.com/auth/gmail.readonly",
+      callback:(response)=>{
+        if(response.access_token){
+          setGmailToken(response.access_token);
+          setGmailConnected(true);
+          // Get user email
+          fetch("https://gmail.googleapis.com/gmail/v1/users/me/profile",{headers:{Authorization:`Bearer ${response.access_token}`}})
+            .then(r=>r.json()).then(d=>setGmailUser(d.emailAddress||"")).catch(()=>{});
+        }
+      },
+    });
+    client.requestAccessToken();
+  },[]);
+
+  const disconnectGmail=useCallback(()=>{
+    if(gmailToken&&window.google?.accounts?.oauth2){
+      window.google.accounts.oauth2.revoke(gmailToken);
+    }
+    setGmailToken(null);setGmailConnected(false);setGmailUser("");
+  },[gmailToken]);
+
+  /* ── Lectura automàtica de correus Gmail (CIDO + Gencat) ── */
+  const fetchGmailLicitacions=useCallback(async()=>{
+    if(!gmailToken)return[];
+    try{
+      // 1. Search for specific emails from CIDO and Gencat (last 3 days)
+      const query=encodeURIComponent('(from:sgsi.svcSam@diba.cat subject:"Liictacions a Catalunya") OR (from:plataforma.contractacio@gencat.cat subject:"Correu diari de subscriptors generals") newer_than:3d');
+      const listRes=await fetch(`https://gmail.googleapis.com/gmail/v1/users/me/messages?q=${query}&maxResults=10`,{
+        headers:{Authorization:`Bearer ${gmailToken}`}
+      });
+      if(!listRes.ok){if(listRes.status===401){setGmailConnected(false);setGmailToken(null);}return[];}
+      const listData=await listRes.json();
+      if(!listData.messages?.length)return[];
+
+      // 2. Fetch each message body in parallel
+      const msgPromises=listData.messages.map(m=>
+        fetch(`https://gmail.googleapis.com/gmail/v1/users/me/messages/${m.id}?format=full`,{
+          headers:{Authorization:`Bearer ${gmailToken}`}
+        }).then(r=>r.json()).catch(()=>null)
+      );
+      const messages=await Promise.all(msgPromises);
+
+      // 3. Extract HTML body from each message and parse
+      let allResults=[];
+      for(const msg of messages){
+        if(!msg?.payload)continue;
+        const htmlBody=extractGmailHtmlBody(msg.payload);
+        if(!htmlBody)continue;
+        // Determine source
+        const fromHeader=(msg.payload.headers||[]).find(h=>h.name.toLowerCase()==="from")?.value||"";
+        const isGencat=fromHeader.includes("gencat.cat");
+        const isCido=fromHeader.includes("diba.cat");
+
+        if(isCido){
+          // Use existing CIDO parser
+          const results=parseCIDOToResults(htmlBody);
+          allResults.push(...results);
+        }else if(isGencat){
+          // Parse Gencat email - similar structure
+          const results=parseGencatToResults(htmlBody);
+          allResults.push(...results);
+        }
+      }
+      return allResults;
+    }catch(e){console.error("Gmail API error:",e);return[];}
+  },[gmailToken,parseCIDOToResults]);
+
   const fetchTransparencia=useCallback(async()=>{
     const f=filters;
-    const importMin=f.importMin?Number(f.importMin):50000;
-    const importMax=f.importMax?Number(f.importMax):2400000;
+    const importMin=f.importMin?Number(f.importMin):0;
+    const importMax=f.importMax?Number(f.importMax):0;
     const today=new Date().toISOString().slice(0,10);
     const since=new Date();since.setDate(since.getDate()-3);
     const sinceStr=since.toISOString().slice(0,10);
-    const where=`tipus_contracte='Obres' AND fase_publicacio='Anunci de licitació' AND pressupost_licitacio_sense>=${importMin} AND pressupost_licitacio_sense<=${importMax} AND termini_presentacio_ofertes>='${today}' AND data_publicacio_anunci>='${sinceStr}'`;
-    const url=`https://analisi.transparenciacatalunya.cat/resource/ybgg-dgi6.json?$limit=200&$order=data_publicacio_anunci DESC&$where=${encodeURIComponent(where)}`;
+    let where=`tipus_contracte='Obres' AND fase_publicacio='Anunci de licitació' AND termini_presentacio_ofertes>='${today}' AND data_publicacio_anunci>='${sinceStr}'`;
+    if(importMin>0)where+=` AND pressupost_licitacio_sense>=${importMin}`;
+    if(importMax>0)where+=` AND pressupost_licitacio_sense<=${importMax}`;
+    const url=`https://analisi.transparenciacatalunya.cat/resource/ybgg-dgi6.json?$limit=500&$order=data_publicacio_anunci DESC&$where=${encodeURIComponent(where)}`;
     const res=await fetch(url);
     if(!res.ok)return[];
     const data=await res.json();
@@ -506,20 +754,24 @@ export default function App(){
       // Filter by keywords
       if(f.paraulesClau){const kw=f.paraulesClau.toLowerCase();if(!r.objecte.toLowerCase().includes(kw)&&!r.organisme.toLowerCase().includes(kw))return false;}
       // Filter by comarca/lloc
-      if(f.comarques.length>0&&f.comarques.length<COMARQUES.length){const loc=(r.comarca_municipi||"").toLowerCase();if(!f.comarques.some(c=>loc.includes(c.toLowerCase())))return false;}
+      if(f.comarques.length>0&&f.comarques.length<COMARQUES.length){
+        const geoTerms=getGeoTerms(f.comarques);
+        const loc=(r.comarca_municipi||"").toLowerCase();
+        const org=(r.organisme||"").toLowerCase();
+        const txt=loc+" "+org;
+        if(![...geoTerms].some(t=>txt.includes(t)))return false;
+      }
       return true;
     }).map(({_terminiDate,...rest})=>rest);
   },[filters]);
 
   const fetchPSCP=useCallback(async()=>{
-    // PSCP RSS is CORS-blocked from browser. Use the same Transparència API
-    // but fetch recent publications (last 30 days) that might not have import yet
+    // Fetch tenders without import (pressupost IS NULL) — complementary to main query
     try{
-      // Fetch tenders without import filter (catches small/unpriced ones not in Transparència)
       const today=new Date().toISOString().slice(0,10);
       const since=new Date();since.setDate(since.getDate()-3);const sinceStr=since.toISOString().slice(0,10);
-      const where=`tipus_contracte='Obres' AND fase_publicacio='Anunci de licitació' AND termini_presentacio_ofertes>='${today}' AND data_publicacio_anunci>='${sinceStr}' AND (pressupost_licitacio_sense<50000 OR pressupost_licitacio_sense IS NULL)`;
-      const url=`https://analisi.transparenciacatalunya.cat/resource/ybgg-dgi6.json?$limit=50&$order=termini_presentacio_ofertes ASC&$where=${encodeURIComponent(where)}`;
+      const where=`tipus_contracte='Obres' AND fase_publicacio='Anunci de licitació' AND termini_presentacio_ofertes>='${today}' AND data_publicacio_anunci>='${sinceStr}' AND pressupost_licitacio_sense IS NULL`;
+      const url=`https://analisi.transparenciacatalunya.cat/resource/ybgg-dgi6.json?$limit=100&$order=termini_presentacio_ofertes ASC&$where=${encodeURIComponent(where)}`;
       const res=await fetch(url);
       if(!res.ok)return[];
       const data=await res.json();
@@ -546,31 +798,48 @@ export default function App(){
 
   const buscarIEnviar=useCallback(async(auto=false)=>{
     if(auto)setScheduleStatus("⏳ Executant cerca automàtica…");
-    setLoading(true);setResults([]);setStatusMsg("Cercant a Transparència, PSCP i CIDO…");setDebugInfo("Iniciant cerca a APIs públiques…");
+    setLoading(true);setResults([]);setStatusMsg("Cercant a contractaciopublica.cat i CIDO…");setDebugInfo("Iniciant cerca a APIs públiques (sense límit d'import)…");
     try{
-      // Fetch all sources in parallel (direct HTTP, no AI needed)
+      const f=filters;
       const cidoExtra=getCidoCache()||[];
-      const [transpData,pscpData]=await Promise.all([
+      const [transpData,pscpData,gmailData]=await Promise.all([
         fetchTransparencia().catch(e=>{setDebugInfo(d=>d+`\n⚠️ Transparència: ${e.message}`);return[];}),
-        fetchPSCP().catch(e=>{setDebugInfo(d=>d+`\n⚠️ PSCP: ${e.message}`);return[];})
+        fetchPSCP().catch(e=>{setDebugInfo(d=>d+`\n⚠️ PSCP: ${e.message}`);return[];}),
+        fetchGmailLicitacions().catch(e=>{setDebugInfo(d=>d+`\n⚠️ Gmail: ${e.message}`);return[];})
       ]);
-      setDebugInfo(`Transparència: ${transpData.length} | PSCP: ${pscpData.length} | CIDO: ${cidoExtra.length}`);
-      const tots=[...transpData,...pscpData,...cidoExtra],vistos=new Set();
+      if(gmailData.length>0){setCidoCache([...cidoExtra,...gmailData]);setCidoCount((cidoExtra.length||0)+gmailData.length);}
+      const rawGmail=[...cidoExtra,...gmailData];
+      // Aplicar filtres globals a resultats CIDO/Gmail (que no tenen filtre propi)
+      const filteredGmail=rawGmail.filter(r=>{
+        // Filtre per paraules clau
+        if(f.paraulesClau){const kw=f.paraulesClau.toLowerCase();if(!r.objecte.toLowerCase().includes(kw)&&!r.organisme.toLowerCase().includes(kw))return false;}
+        // Filtre per comarques/província — cerca a objecte + organisme + comarca
+        if(f.comarques.length>0&&f.comarques.length<COMARQUES.length){
+          const geoTerms=getGeoTerms(f.comarques);
+          const txt=(r.objecte+" "+r.organisme+" "+(r.comarca_municipi||"")).toLowerCase();
+          if(![...geoTerms].some(t=>txt.includes(t)))return false;
+        }
+        // Filtre per import mínim/màxim (CIDO no té import, skip si filtre actiu)
+        if(f.importMin&&Number(f.importMin)>0&&r.import_eur===0)return true;// no filtrar per import si no en té
+        if(f.importMax&&Number(f.importMax)>0&&r.import_eur>Number(f.importMax))return false;
+        return true;
+      });
+      setDebugInfo(`Transparència: ${transpData.length} | PSCP: ${pscpData.length} | CIDO/Gmail brut: ${rawGmail.length} | CIDO/Gmail filtrat: ${filteredGmail.length}`);
+      const tots=[...transpData,...pscpData,...filteredGmail],vistos=new Set();
       const combinats=tots.filter(r=>{const k=(r.expedient||r.objecte||"").toLowerCase().trim().slice(0,50);if(!k||vistos.has(k))return false;vistos.add(k);return true;});
       if(combinats.length===0)throw new Error("No s'han trobat licitacions amb els filtres actuals.");
       const mapped=combinats.map(r=>{
         let classif=r.classificacio_requerida||[];
-        // Si no hi ha classificació explícita, inferir per import+CPV (>500k requereix classificació)
         if(classif.length===0&&r.import_eur>=500000)classif=inferClassificacio(r.cpv,r.import_eur);
         return{...r,classificacio_requerida:classif,_compat:checkCompatibility(classif)};
       });
       const sorted=[...mapped].sort((a,b)=>b.puntuacio-a.puntuacio);
       setResults(sorted);setActiveTab("resultats");
-      setStatusMsg(`${sorted.length} licitació${sorted.length!==1?"ns":""} trobada${sorted.length!==1?"es":""} (Transp: ${transpData.length} | PSCP: ${pscpData.length} | CIDO: ${cidoExtra.length})`);
+      setStatusMsg(`${sorted.length} licitació${sorted.length!==1?"ns":""} trobada${sorted.length!==1?"es":""} (Transp: ${transpData.length} | PSCP: ${pscpData.length} | CIDO/Gmail: ${filteredGmail.length})`);
       setDebugInfo(`✅ ${sorted.length} resultats totals`);
     }catch(e){setStatusMsg(`Error: ${e.message}`);setDebugInfo(`❌ ${e.message}`);}
     finally{setLoading(false);}
-  },[fetchTransparencia,fetchPSCP]);
+  },[fetchTransparencia,fetchPSCP,fetchGmailLicitacions,filters]);
 
   useEffect(()=>{
     const iv=setInterval(()=>{
@@ -613,13 +882,35 @@ export default function App(){
     if(!plecFiles.length){setPlecError("Afegeix almenys un fitxer PDF.");return;}
     setPlecLoading(true);setPlecResults([]);setPlecRawText("");setPlecError("");setPlecStatus("Llegint fitxers PDF…");
     try{
-      const docs=await Promise.all(plecFiles.map(f=>new Promise((res,rej)=>{
+      const MAX_PDF_PAGES=70;
+      const rawDocs=await Promise.all(plecFiles.map(f=>new Promise((res,rej)=>{
         const reader=new FileReader();
-        reader.onload=()=>res({name:f.name,b64:reader.result.split(",")[1]});
+        reader.onload=()=>res({name:f.name,arrayBuffer:reader.result});
         reader.onerror=()=>rej(new Error(`No s'ha pogut llegir ${f.name}`));
-        reader.readAsDataURL(f);
+        reader.readAsArrayBuffer(f);
       })));
-      setPlecStatus(`Analitzant ${docs.length} document${docs.length!==1?"s":""} amb IA…`);
+      setPlecStatus("Verificant pàgines dels PDFs…");
+      const docs=[];
+      for(const raw of rawDocs){
+        const pdfDoc=await PDFDocument.load(raw.arrayBuffer);
+        const totalPages=pdfDoc.getPageCount();
+        if(totalPages<=MAX_PDF_PAGES){
+          const b64=btoa(new Uint8Array(raw.arrayBuffer).reduce((s,b)=>s+String.fromCharCode(b),""));
+          docs.push({name:raw.name,b64});
+        }else{
+          setPlecStatus(`PDF "${raw.name}" té ${totalPages} pàgines. Dividint en trossos de ${MAX_PDF_PAGES}…`);
+          for(let start=0;start<totalPages;start+=MAX_PDF_PAGES){
+            const end=Math.min(start+MAX_PDF_PAGES,totalPages);
+            const newPdf=await PDFDocument.create();
+            const pages=await newPdf.copyPages(pdfDoc,Array.from({length:end-start},(_,i)=>start+i));
+            pages.forEach(p=>newPdf.addPage(p));
+            const bytes=await newPdf.save();
+            const b64=btoa(new Uint8Array(bytes).reduce((s,b)=>s+String.fromCharCode(b),""));
+            docs.push({name:`${raw.name} (pàg. ${start+1}-${end})`,b64});
+          }
+        }
+      }
+      setPlecStatus(`Analitzant ${docs.length} document${docs.length!==1?"s":""} (${docs.length>rawDocs.length?"dividit automàticament":""}) amb IA…`);
       const PROMPT=`Analitza el PCAP/PPT d'aquesta licitació:
 • Expedient: ${plecNom||"(no indicat)"}
 • Òrgan de contractació: ${plecOrgan||"(no indicat)"}
@@ -671,7 +962,7 @@ INSTRUCCIONS D'EXTRACCIÓ — segueix aquest esquema:
    - Pressupost base de licitació sense IVA i amb IVA
    - Valor estimat del contracte (pot diferir del pressupost si hi ha pròrrogues/lots)
    - Termini d'execució
-   - Termini de presentació d'ofertes (data i hora exacta)
+   - Termini de presentació d'ofertes (data i hora exacta, SEMPRE en format DD/MM/YYYY HH:MM, ex: 15/04/2026 14:00. Mai text descriptiu, només la data numèrica)
 
 2. CLASSIFICACIÓ I SOLVÈNCIA (aplicar marc legal LCSP)
    PRIMER determina: el valor estimat és ≥ 500.000 €?
@@ -691,56 +982,170 @@ INSTRUCCIONS D'EXTRACCIÓ — segueix aquest esquema:
    ATENCIÓ: La categoria depèn de l'anualitat mitjana (import ÷ anys), NO de l'import total.
    Ex: obra de 1.500.000€ en 2 anys → anualitat 750.000€ → Cat.3
 
-3. CRITERIS D'ADJUDICACIÓ
-   - Criteris automàtics (preu, termini, etc.) amb puntuació i fórmula EXACTA tal com apareix al plec
-   - Criteris de judici de valor amb puntuació
-   - Indica el TOTAL de punts i el % automàtics vs judici de valor
+3. CRITERIS D'ADJUDICACIÓ — EXTRACCIÓ EXHAUSTIVA
 
-4. GARANTIES I CONDICIONS
+   3A. CRITERIS AUTOMÀTICS (Sobre econòmic / Sobre C):
+   - Preu: fórmula EXACTA tal com apareix al plec (lineal, proporcional, amb/sense referència a mitjana)
+   - Llindar de temeritat / oferta anormalment baixa: criteri i % o fórmula
+   - Reducció de termini (si puntua): fórmula i límits
+   - Altres automàtics: certificacions, garantia addicional, millores quantificables, etc.
+   - Puntuació de cada criteri automàtic
+
+   3B. CRITERIS DE JUDICI DE VALOR (Sobre tècnic / Sobre B) — EXTRACCIÓ AMB MÀXIM DETALL:
+   Aquesta secció és CLAU per preparar l'oferta tècnica. Per CADA criteri de judici de valor, fes una fitxa completa:
+
+   FITXA PER CRITERI:
+   a) NOM del criteri i PUNTUACIÓ MÀXIMA
+   b) SUBCRITERIS: desglossament complet amb punts assignats a cada subcriteri
+   c) QUÈ VALOREN EXACTAMENT — transcriu o resumeix fidelment el que diu el plec:
+      - Què esperen llegir a la memòria per aquest criteri?
+      - Quins aspectes puntuen més? (exhaustivitat, concreció, innovació, adequació al projecte, experiència demostrada, metodologia, etc.)
+      - Hi ha exemples o indicacions al plec de què consideren una "bona resposta"?
+      - Es valora l'aportació de mitjans propis (maquinària, equips, personal qualificat)?
+      - Es valora la proximitat geogràfica o el coneixement del territori?
+   d) COM ES PUNTUA — barem de puntuació:
+      - Si el plec defineix rangs (0-5 pts: insuficient, 5-10: adequat, 10-15: excel·lent, etc.)
+      - Si puntua per comparació entre ofertes (la millor rep el màxim, les altres proporcional)
+      - Si hi ha criteri de consens de la mesa o puntuació individual dels membres
+      - Quins factors diferencien una puntuació alta d'una baixa
+   e) CONTINGUT ESPERAT — què ha d'incloure la memòria per aquest criteri:
+      - Capítols o apartats específics que demana el plec
+      - Si cal planning d'obra (Gantt, camí crític, fites)
+      - Si cal organigrama amb noms i titulacions
+      - Si cal pla de qualitat, pla de seguretat, pla mediambiental
+      - Si cal descripció de procés constructiu o metodologia d'execució
+      - Si cal justificació tècnica de les millores proposades
+      - Si cal documentació gràfica (plànols, renders, fotografies d'obres similars)
+   f) MILLORES VALORABLES — si el plec puntua millores:
+      - Quines millores accepten? (ampliació termini garantia, millores de materials, prestacions addicionals, etc.)
+      - Hi ha un catàleg de millores predefinit o són lliures?
+      - Límit de millores (nombre màxim, import màxim)
+      - Com es valoren: per import econòmic, per utilitat, per innovació?
+      - ATENCIÓ: si les millores suposen cost addicional a l'empresa, indicar-ho
+
+   LLINDAR MÍNIM TÈCNIC:
+   - Hi ha puntuació mínima al sobre tècnic per obrir l'econòmic? Quina?
+   - Si no s'arriba al llindar, l'oferta queda exclosa? O es valora igualment?
+
+   3C. REQUISITS FORMALS DE LA MEMÒRIA TÈCNICA:
+   - Limitació de pàgines (nombre màxim per memòria o per apartat)
+   - Mida de la font / tipografia exigida
+   - Format (A4, interlineat, marges, si permeten annexos fora del límit de pàgines)
+   - Si es penalitza per excedir el límit de pàgines (no es llegeix? es penalitza? es retorna?)
+   - Contingut obligatori: apartats que HA de tenir la memòria, índex suggerit o obligatori
+   - Si demanen documentació gràfica (plànols, planning, organigrama, etc.)
+
+   3D. RESUM ESTRATÈGIC:
+   - Total punts automàtics vs judici de valor (punts i %)
+   - Tipus de licitació: PREU DOMINANT (>60% auto) o QUALITAT DOMINANT (>50% judici valor)
+   - On concentrar l'esforç: preu agressiu o memòria tècnica detallada?
+
+4. CRITERIS D'EXCLUSIÓ I TEMERITAT
+   - Causes d'exclusió de l'oferta: documentació incompleta, no complir requisits mínims, ofertes fora de termini, etc.
+   - TEMERITAT / OFERTA ANORMALMENT BAIXA:
+     → Fórmula o criteri exacte per determinar quan una oferta és temerària (art. 149 LCSP)
+     → % de baixa a partir del qual es considera temerària (si el plec ho fixa)
+     → Procediment: si demanen justificació de la baixa, termini per presentar-la
+     → Conseqüències: exclusió automàtica o possibilitat de justificar?
+   - Límits a la baixa econòmica (si n'hi ha): baixa màxima permesa, imports mínims
+   - Exclusions per incompliment tècnic: llindar mínim tècnic que exclou de l'obertura econòmica
+
+5. GARANTIES I CONDICIONS
    - Garantia provisional (si escau)
    - Garantia definitiva (% i base de càlcul)
    - Condicions especials d'execució
    - Visita d'obra obligatòria (sí/no, data si escau)
    - Penalitats rellevants
 
-5. DIAGNÒSTIC PER A SERVIAL
-   Classificació acreditada SERVIAL (Exp. 202210137):
+6. DIAGNÒSTIC PER A SERVIAL — SECCIÓ CRÍTICA, FES-LA AMB MÀXIM RIGOR
+
+   Classificació acreditada SERVIAL (Exp. 202210137) — LLISTA EXHAUSTIVA, Servial NOMÉS té aquests subgrups:
    A1 Cat.3 | C1 Cat.4 | C2 Cat.4 | C3 Cat.4 | C4 Cat.4 | C5 Cat.4 | C6 Cat.4 | C7 Cat.4 | C8 Cat.4 | C9 Cat.4
    E1 Cat.3 | E4 Cat.3 | E5 Cat.3 | E7 Cat.3 | G3 Cat.2 | G5 Cat.2 | G6 Cat.4 | K6 Cat.1
 
-   ANÀLISI:
-   a) Si s'exigeix classificació: per cada subgrup requerit, compara amb la taula de Servial.
-      - Indica si Servial té el subgrup i si la categoria és suficient, insuficient o no el té.
-      - Calcula l'anualitat mitjana per verificar la categoria requerida.
-   b) Si NO s'exigeix classificació (solvència): avalua si Servial probablement compleix basant-se en la seva classificació com a indicador de capacitat.
-   c) Conclou amb: COMPATIBLE / INCOMPATIBLE / PARCIAL + raons detallades.
-   d) Si és PARCIAL o INCOMPATIBLE, suggereix si seria viable en UTE i quin perfil de soci es necessitaria.
+   ⚠️ IMPORTANT: Servial NO TÉ classificació en els grups B, D, F, H, I, J ni en subgrups no llistats de A, E, G, K.
+   Qualsevol subgrup NO present a la llista anterior = SERVIAL NO EL TÉ = INCOMPATIBLE per aquell subgrup.
+
+   PROCEDIMENT OBLIGATORI (fes una taula):
+   a) Llista TOTS els subgrups exigits pel plec en una taula amb columnes:
+      | Subgrup exigit | Categoria exigida | Servial té? | Categoria Servial | Resultat |
+      Per cada fila:
+      - Cerca el subgrup EXACTE a la llista de Servial de dalt
+      - Si NO el troba → Resultat = "❌ NO DISPOSA"
+      - Si el troba però categoria insuficient → Resultat = "⚠️ CATEGORIA INSUFICIENT"
+      - Si el troba i categoria suficient → Resultat = "✅ COMPLEIX"
+   b) Calcula l'anualitat mitjana (import total ÷ anys execució) per verificar la categoria requerida.
+   c) CONCLUSIÓ FINAL basada en la taula:
+      - Si TOTS els subgrups són ✅ → COMPATIBLE
+      - Si algun és ❌ o ⚠️ → INCOMPATIBLE o PARCIAL
+      - Explica CLARAMENT quins subgrups falten i per què
+   d) Si és PARCIAL o INCOMPATIBLE:
+      - Suggereix si seria viable en UTE
+      - Indica el perfil de soci necessari (quins grups/subgrups ha d'aportar)
+      - Exemple: "Caldria un soci amb classificació I1 Cat.3 i J2 Cat.3 per cobrir instal·lacions"
+
+7. ENLLAÇ DE PUBLICACIÓ
+   - Si el document conté l'URL de publicació oficial (perfil del contractant, plataforma de contractació), inclou-lo al camp "enllac_publicacio" del JSON.
 
 Al FINAL del text, afegeix el JSON entre aquests marcadors exactes (sense backticks ni text extra):
 --JSON_INICI--
-{"expedient":"","objecte":"","organisme":"","cpv":"","import_sense_iva":0,"import_amb_iva":0,"valor_estimat":0,"termini_execucio":"","termini_presentacio":"","exigeix_classificacio":true,"classificacio_requerida":[{"grup":"C","subgrup":"2","categoria":3}],"classificacio_substitueix_solvencia":true,"solvencia_economica":"","solvencia_tecnica":"","criteris_automatics":[{"nom":"Preu","punts":60,"formula":""}],"criteris_judici_valor":[{"nom":"Millores","punts":40}],"total_punts_automatics":60,"total_punts_judici_valor":40,"garantia_definitiva":"5% preu adjudicació s/IVA","garantia_provisional":"","condicions_especials":"","visita_obra":"No","penalitats":"","diagnosic_servial":""}
+{"expedient":"","objecte":"","organisme":"","cpv":"","import_sense_iva":0,"import_amb_iva":0,"valor_estimat":0,"termini_execucio":"","termini_presentacio":"DD/MM/YYYY HH:MM","exigeix_classificacio":true,"classificacio_requerida":[{"grup":"C","subgrup":"2","categoria":3}],"classificacio_substitueix_solvencia":true,"solvencia_economica":"","solvencia_tecnica":"","criteris_automatics":[{"nom":"Preu","punts":60,"formula":""}],"criteris_judici_valor":[{"nom":"Planificació i seqüència d'execució","punts":15,"subcriteris":["Coherència de la seqüència","Adequació fases execució","Compatibilitat equipament"],"que_valoren":"Coherència, adequació al projecte, compatibilitat","bandes_puntuacio":[{"rang":"0-2","descripcio":"proposta genèrica o poc adaptada"},{"rang":"3-4","descripcio":"correcta i coherent"},{"rang":"5-6","descripcio":"molt ben estructurada i específica"}],"inconsistencia":""}],"requisits_memoria":{"max_pagines":"","format":"DIN A4","font":"","interlineat":"","annexos":"","penalitzacio_excedir":""},"llindar_minim_tecnic":{"te_llindar":false,"puntuacio_minima":0,"consequencia":""},"total_punts_automatics":60,"total_punts_judici_valor":40,"total_punts":100,"temeritat":{"formula":"","percentatge":"","procediment":"","consequencia":""},"criteris_exclusio":[""],"garantia_definitiva":"5% preu adjudicació s/IVA","garantia_provisional":"","condicions_especials":"","visita_obra":"No","penalitats":"","diagnosic_servial":"","enllac_publicacio":""}
 --JSON_FI--`;
       const SYSTEM_PLEC=`Ets un expert en contractació pública espanyola (LCSP Llei 9/2017, RD 1098/2001). Regles clau:
 1. CLASSIFICACIÓ SUBSTITUEIX SOLVÈNCIA (arts. 77-85): no són acumulables. En obres ≥500k€ la classificació és obligatòria.
 2. CATEGORIA = anualitat mitjana (import÷anys execució), NO import total. Cat.1:≤150k | Cat.2:150-360k | Cat.3:360-840k | Cat.4:840k-2,4M | Cat.5:2,4-5M | Cat.6:>5M.
 3. Coneixes TOTS els grups (A-K) i subgrups d'obres, i els grups de serveis (L-R).
 4. Analitzes PCAP/PPT amb rigor jurídic per a Servial, constructora catalana amb classificació en grups A,C,E,G,K.`;
-      const contentBlocks=[
-        ...docs.map(d=>({type:"document",source:{type:"base64",media_type:"application/pdf",data:d.b64}})),
-        {type:"text",text:PROMPT}
-      ];
-      setPlecStatus(`Analitzant amb ${aiProvider==="claude"?"Claude (Anthropic)":"Gemini (Google)"}…`);
-      const raw=await callAI(SYSTEM_PLEC,contentBlocks,8000,aiProvider);
+      let raw="";
+      if(docs.length===1){
+        const contentBlocks=[
+          {type:"document",source:{type:"base64",media_type:"application/pdf",data:docs[0].b64}},
+          {type:"text",text:PROMPT}
+        ];
+        setPlecStatus(`Analitzant amb ${aiProvider==="claude"?"Claude (Anthropic)":"Gemini (Google)"}…`);
+        raw=await callAI(SYSTEM_PLEC,contentBlocks,16000,aiProvider);
+      }else{
+        // Múltiples trossos: analitzar cada part per separat i combinar
+        const partials=[];
+        for(let i=0;i<docs.length;i++){
+          setPlecStatus(`Analitzant part ${i+1}/${docs.length} (${docs[i].name}) amb ${aiProvider==="claude"?"Claude":"Gemini"}…`);
+          if(i<docs.length-1){
+            // Parts intermèdies: NOMÉS extreure dades en brut, sense informe
+            const extractPrompt=`Aquesta és la part ${i+1}/${docs.length} del plec. EXTREU NOMÉS les dades rellevants que trobis en format esquemàtic (punts clau). NO facis cap informe, NO segueixis l'estructura de 6 apartats, NO generis JSON. Només llista les dades que trobis: imports, terminis, classificacions, criteris, garanties, condicions, etc. Sigues concís.`;
+            const contentBlocks=[
+              {type:"document",source:{type:"base64",media_type:"application/pdf",data:docs[i].b64}},
+              {type:"text",text:extractPrompt}
+            ];
+            const partRaw=await callAI(SYSTEM_PLEC,contentBlocks,8000,aiProvider);
+            if(partRaw)partials.push(partRaw);
+            setPlecStatus(`Part ${i+1} completada. Esperant 65s per rate limit…`);
+            await new Promise(r=>setTimeout(r,65000));
+          }else{
+            // ÚLTIMA PART: genera l'informe ÚNIC i complet
+            const finalPrompt=`Aquesta és la ÚLTIMA part (${i+1}/${docs.length}) del plec. A continuació tens les dades extretes de les parts anteriors:\n\n${partials.map((p,j)=>`=== DADES PART ${j+1} ===\n${p.slice(0,4000)}`).join("\n\n")}\n\nAmb TOTES les dades anteriors + aquesta última part, genera UN SOL informe complet seguint l'estructura. NO repeteixis apartats. Cada apartat ha d'aparèixer UNA SOLA vegada.\n\n${PROMPT}`;
+            const contentBlocks=[
+              {type:"document",source:{type:"base64",media_type:"application/pdf",data:docs[i].b64}},
+              {type:"text",text:finalPrompt}
+            ];
+            const partRaw=await callAI(SYSTEM_PLEC,contentBlocks,16000,aiProvider);
+            if(partRaw)partials.push(partRaw);
+          }
+        }
+        // Només l'últim partial conté l'informe complet
+        raw=partials[partials.length-1]||"";
+      }
       if(!raw)throw new Error("La IA no ha retornat cap resposta. Comprova que el PDF no estigui protegit.");
       setPlecRawText(raw);
       setPlecStatus("");
       const jsonMatch=raw.match(/--JSON_INICI--([\s\S]*?)--JSON_FI--/);
+      let parsedResults=[];
       if(jsonMatch){
-        try{setPlecResults([JSON.parse(jsonMatch[1].trim())]);setPlecView("taula");}
+        try{parsedResults=[JSON.parse(jsonMatch[1].trim())];setPlecResults(parsedResults);setPlecView("taula");}
         catch(e){setPlecError("Informe generat però no s'ha pogut parsejar el JSON. Consulta la pestanya 📝 Informe.");setPlecView("text");}
       } else {
         setPlecView("text");
       }
+      guardarPlecHistorial(plecNom||plecOrgan||"Anàlisi",parsedResults,raw);
     }catch(e){
       setPlecError(`Error: ${e.message}`);
       setPlecStatus("");
@@ -751,53 +1156,126 @@ Al FINAL del text, afegeix el JSON entre aquests marcadors exactes (sense backti
 
   const exportarPlecExcel=()=>exportExcelRadar(plecResults.map(r=>({"Expedient":r.expedient||"","Objecte":r.objecte||"","Organisme":r.organisme||"","CPV":r.cpv||"","Import s/IVA":r.import_sense_iva||0,"Import c/IVA":r.import_amb_iva||0,"Termini execució":r.termini_execucio||"","Termini presentació":r.termini_presentacio||"","Classificació":(r.classificacio_requerida||[]).map(c=>`${c.grup}${c.subgrup} Cat.${c.categoria}`).join(" | "),"Solvència econòmica":r.solvencia_economica||"","Solvència tècnica":r.solvencia_tecnica||"","Criteris automàtics":(r.criteris_automatics||[]).map(c=>`${c.nom}(${c.punts}pts): ${c.formula}`).join(" | "),"Criteris judici valor":(r.criteris_judici_valor||[]).map(c=>`${c.nom}(${c.punts}pts)`).join(" | "),"Garantia definitiva":r.garantia_definitiva||"","Diagnòstic Servial":r.diagnosic_servial||""})),`analisi_plec_${plecNom||"licitacio"}_${new Date().toISOString().slice(0,10)}.xlsx`);
 
+  const mdToHtml=md=>{if(!md)return"";
+    // Convert markdown tables to HTML tables
+    const lines=md.split('\n');const out=[];let inTable=false;
+    for(let i=0;i<lines.length;i++){
+      const line=lines[i].trim();
+      if(line.startsWith('|')&&line.endsWith('|')){
+        const cells=line.split('|').filter((_,j,a)=>j>0&&j<a.length-1).map(c=>c.trim());
+        if(!inTable){inTable=true;out.push('<table><thead><tr>'+cells.map(c=>'<th>'+c+'</th>').join('')+'</tr></thead><tbody>');
+          // Skip separator row (|---|---|)
+          if(i+1<lines.length&&/^\|[\s\-:|]+\|$/.test(lines[i+1].trim()))i++;
+        }else{out.push('<tr>'+cells.map(c=>'<td>'+c+'</td>').join('')+'</tr>');}
+      }else{
+        if(inTable){inTable=false;out.push('</tbody></table>');}
+        out.push(line);
+      }
+    }
+    if(inTable)out.push('</tbody></table>');
+    return out.join('\n')
+    .replace(/####\s+(.+)/g,'<h4>$1</h4>')
+    .replace(/###\s+(.+)/g,'<h3>$1</h3>')
+    .replace(/##\s+(.+)/g,'<h2>$1</h2>')
+    .replace(/#\s+(.+)/g,'<h1>$1</h1>')
+    .replace(/\*\*(.+?)\*\*/g,'<strong>$1</strong>')
+    .replace(/\*(.+?)\*/g,'<em>$1</em>')
+    .replace(/^[-•]\s+(.+)/gm,'<li>$1</li>')
+    .replace(/(<li>.*<\/li>)/gs,m=>'<ul>'+m+'</ul>')
+    .replace(/<\/ul>\s*<ul>/g,'')
+    .replace(/═+/g,'<hr>')
+    .replace(/─+/g,'<hr style="border-style:dashed">')
+    .replace(/\n{2,}/g,'</p><p>')
+    .replace(/\n/g,'<br>')
+    .replace(/^/,'<p>').replace(/$/,'</p>');};
   const exportarPlecPDF=(res,rawText,nom)=>{
     const r=res[0]||{};const date=new Date().toLocaleDateString("ca-ES");
     const fmtI=v=>v?Number(v).toLocaleString("ca-ES",{minimumFractionDigits:2})+" €":"—";
     const classif=(r.classificacio_requerida||[]).map(c=>`${c.grup}${c.subgrup} Cat.${c.categoria}`).join(" | ")||"—";
-    const critsAuto=(r.criteris_automatics||[]).map(c=>`<tr><td style="padding:4px 8px;border:1px solid #ddd">${c.nom}</td><td style="padding:4px 8px;border:1px solid #ddd;text-align:right">${c.punts} pts</td><td style="padding:4px 8px;border:1px solid #ddd;font-size:10px">${c.formula||""}</td></tr>`).join("");
-    const critsJV=(r.criteris_judici_valor||[]).map(c=>`<tr><td style="padding:4px 8px;border:1px solid #ddd">${c.nom}</td><td style="padding:4px 8px;border:1px solid #ddd;text-align:right">${c.punts} pts</td></tr>`).join("");
+    const critsAuto=(r.criteris_automatics||[]).map(c=>`<tr><td>${c.nom}</td><td class="num">${c.punts} pts</td><td class="small">${c.formula||""}</td></tr>`).join("");
+    const critsJV=(r.criteris_judici_valor||[]).map(c=>`<tr><td>${c.nom}</td><td class="num">${c.punts} pts</td></tr>`).join("");
     const ptsAuto=(r.criteris_automatics||[]).reduce((s,c)=>s+(c.punts||0),0);
     const ptsJV=(r.criteris_judici_valor||[]).reduce((s,c)=>s+(c.punts||0),0);
     const informeText=(rawText||"").replace(/--JSON_INICI--[\s\S]*?--JSON_FI--/,"").trim();
+    const informeHtml=mdToHtml(informeText);
     const html=`<!DOCTYPE html><html><head><meta charset="utf-8"><title>Anàlisi Plec - ${r.objecte||nom||""}</title>
-<style>@page{size:A4;margin:15mm}body{font-family:Arial,sans-serif;font-size:11px;color:#333;line-height:1.5}
-h1{font-size:16px;color:#1e3a5f;border-bottom:2px solid #1e3a5f;padding-bottom:6px}
-h2{font-size:13px;color:#1e3a5f;margin-top:18px;border-bottom:1px solid #ccc;padding-bottom:3px}
-.meta{color:#666;font-size:10px;margin-bottom:12px}
-table{border-collapse:collapse;width:100%;margin:8px 0}
-th{background:#f0f4f8;padding:5px 8px;border:1px solid #ddd;text-align:left;font-size:10px}
-td{padding:4px 8px;border:1px solid #ddd;font-size:10px}
-.badge{display:inline-block;padding:2px 8px;border-radius:10px;font-size:10px;font-weight:bold;margin:2px}
-.diag{background:#fef3c7;border:1px solid #f59e0b;border-radius:8px;padding:10px;margin:12px 0}
-.informe{white-space:pre-wrap;font-size:10px;line-height:1.6;margin-top:8px;page-break-before:always}
+<style>
+@page{size:A4;margin:18mm 15mm}
+body{font-family:'Segoe UI',Arial,sans-serif;font-size:11px;color:#333;line-height:1.6;max-width:100%}
+.header{background:linear-gradient(135deg,#1e3a5f,#2d5a8e);color:white;padding:20px 24px;border-radius:8px;margin-bottom:16px}
+.header h1{font-size:18px;margin:0 0 4px 0;border:none;padding:0;color:white}
+.header .meta{color:#a8c8e8;font-size:10px;margin:0}
+.header .expedient{color:#d4e8f7;font-size:12px;margin-top:6px}
+h2{font-size:13px;color:#1e3a5f;margin:20px 0 8px 0;padding:6px 10px;background:#f0f4f8;border-left:3px solid #1e3a5f;border-radius:0 4px 4px 0}
+h3{font-size:12px;color:#2d5a8e;margin:14px 0 6px 0;padding-bottom:3px;border-bottom:1px dotted #ccc}
+h4{font-size:11px;color:#444;margin:10px 0 4px 0;font-weight:600}
+table{border-collapse:collapse;width:100%;margin:8px 0;border-radius:4px;overflow:hidden}
+thead tr{background:#1e3a5f;color:white}
+th{padding:6px 10px;text-align:left;font-size:10px;font-weight:600}
+td{padding:5px 10px;border-bottom:1px solid #e8e8e8;font-size:10px}
+tr:nth-child(even){background:#f8fafc}
+tr:hover{background:#eef3f8}
+td.num{text-align:right;font-weight:600;color:#1e3a5f}
+td.small{font-size:9px;color:#666}
+.badge{display:inline-block;padding:3px 10px;border-radius:12px;font-size:10px;font-weight:bold;margin:2px}
+.badge-ok{background:#d1fae5;color:#065f46}
+.badge-ko{background:#fee2e2;color:#991b1b}
+.badge-parcial{background:#fef3c7;color:#92400e}
+.diag{background:linear-gradient(135deg,#fffbeb,#fef3c7);border:1px solid #f59e0b;border-radius:8px;padding:14px 16px;margin:16px 0}
+.diag strong{color:#92400e;font-size:12px}
+.diag p{margin:6px 0 0 0;color:#78350f}
+.informe{margin-top:12px;page-break-before:always}
+.informe h2{background:#f0f4f8}
+.informe p{margin:4px 0;text-align:justify}
+.informe ul{margin:4px 0 8px 16px;padding:0}
+.informe li{margin:2px 0;list-style:disc}
+.informe hr{border:none;border-top:1px solid #ddd;margin:12px 0}
+.section-card{background:white;border:1px solid #e5e7eb;border-radius:8px;padding:14px 16px;margin:8px 0;box-shadow:0 1px 3px rgba(0,0,0,0.05)}
+.footer{text-align:center;color:#999;font-size:9px;margin-top:24px;padding-top:8px;border-top:1px solid #eee}
+strong{color:#1e3a5f}
 </style></head><body>
-<h1>📋 Anàlisi de Plec — ${r.objecte||nom||"Licitació"}</h1>
-<p class="meta">Generat el ${date} · Servial Construccions</p>
-<h2>Dades bàsiques</h2>
+<div class="header">
+<h1>📋 Anàlisi de Plec</h1>
+<div class="meta">Generat el ${date} · Servial Construccions</div>
+${r.expedient?`<div class="expedient">Exp. ${r.expedient}</div>`:""}
+</div>
+<div class="section-card">
+<h2>📌 Dades bàsiques</h2>
 <table><tbody>
-${r.expedient?`<tr><th width="30%">Expedient</th><td>${r.expedient}</td></tr>`:""}
-${r.objecte?`<tr><th>Objecte</th><td>${r.objecte}</td></tr>`:""}
+${r.objecte?`<tr><th width="30%">Objecte</th><td>${r.objecte}</td></tr>`:""}
 ${r.organisme?`<tr><th>Organisme</th><td>${r.organisme}</td></tr>`:""}
 ${r.cpv?`<tr><th>CPV</th><td>${r.cpv}</td></tr>`:""}
-<tr><th>Import s/IVA</th><td>${fmtI(r.import_sense_iva)}</td></tr>
-<tr><th>Import c/IVA</th><td>${fmtI(r.import_amb_iva)}</td></tr>
+<tr><th>Import s/IVA</th><td class="num">${fmtI(r.import_sense_iva)}</td></tr>
+<tr><th>Import c/IVA</th><td class="num">${fmtI(r.import_amb_iva)}</td></tr>
+${r.valor_estimat?`<tr><th>Valor estimat</th><td class="num">${fmtI(r.valor_estimat)}</td></tr>`:""}
 ${r.termini_execucio?`<tr><th>Termini execució</th><td>${r.termini_execucio}</td></tr>`:""}
-${r.termini_presentacio?`<tr><th>Termini presentació</th><td>${r.termini_presentacio}</td></tr>`:""}
+${r.termini_presentacio?`<tr><th>⏰ Termini presentació</th><td><strong>${r.termini_presentacio}</strong></td></tr>`:""}
 </tbody></table>
-<h2>Classificació i solvència</h2>
-<p><strong>Classificació requerida:</strong> ${classif}</p>
+</div>
+<div class="section-card">
+<h2>🏗️ Classificació i solvència</h2>
+<p><strong>Classificació requerida:</strong> <span class="badge" style="background:#e0e7ff;color:#3730a3">${classif}</span></p>
+${r.classificacio_substitueix_solvencia?`<p style="color:#065f46;font-size:10px">✅ La classificació substitueix la solvència</p>`:""}
 ${r.solvencia_economica?`<p><strong>Solvència econòmica:</strong> ${r.solvencia_economica}</p>`:""}
 ${r.solvencia_tecnica?`<p><strong>Solvència tècnica:</strong> ${r.solvencia_tecnica}</p>`:""}
-${(critsAuto||critsJV)?`<h2>Criteris d'adjudicació</h2>`:""}
-${critsAuto?`<p><strong>Criteris automàtics (${ptsAuto} pts)</strong></p><table><thead><tr><th>Criteri</th><th width="60">Punts</th><th>Fórmula</th></tr></thead><tbody>${critsAuto}</tbody></table>`:""}
-${critsJV?`<p><strong>Criteris judici de valor (${ptsJV} pts)</strong></p><table><thead><tr><th>Criteri</th><th width="60">Punts</th></tr></thead><tbody>${critsJV}</tbody></table>`:""}
-<h2>Garanties i condicions</h2>
+</div>
+${(critsAuto||critsJV)?`<div class="section-card">
+<h2>📊 Criteris d'adjudicació</h2>
+<p style="font-size:10px;color:#666">Total: <strong>${ptsAuto+ptsJV} punts</strong> · Automàtics: ${ptsAuto} pts (${Math.round(ptsAuto/(ptsAuto+ptsJV)*100)}%) · Judici de valor: ${ptsJV} pts (${Math.round(ptsJV/(ptsAuto+ptsJV)*100)}%)</p>
+${critsAuto?`<table><thead><tr><th>Criteri automàtic</th><th width="60">Punts</th><th>Fórmula</th></tr></thead><tbody>${critsAuto}</tbody></table>`:""}
+${critsJV?`<table><thead><tr><th>Criteri judici de valor</th><th width="60">Punts</th></tr></thead><tbody>${critsJV}</tbody></table>`:""}
+</div>`:""}
+<div class="section-card">
+<h2>🔒 Garanties i condicions</h2>
 ${r.garantia_definitiva?`<p><strong>Garantia definitiva:</strong> ${r.garantia_definitiva}</p>`:""}
+${r.garantia_provisional?`<p><strong>Garantia provisional:</strong> ${r.garantia_provisional}</p>`:""}
 ${r.visita_obra?`<p><strong>Visita d'obra:</strong> ${r.visita_obra}</p>`:""}
 ${r.condicions_especials?`<p><strong>Condicions especials:</strong> ${r.condicions_especials}</p>`:""}
+${r.penalitats?`<p><strong>Penalitats:</strong> ${r.penalitats}</p>`:""}
+</div>
 ${r.diagnosic_servial?`<div class="diag"><strong>⚠️ Diagnòstic per a Servial</strong><p>${r.diagnosic_servial}</p></div>`:""}
-${informeText?`<div class="informe"><h2>📝 Informe complet</h2>${informeText}</div>`:""}
+${informeText?`<div class="informe"><h2>📝 Informe complet de l'anàlisi</h2>${informeHtml}</div>`:""}
+<div class="footer">SERVIAL Construccions · Anàlisi de plec generat automàticament · ${date}</div>
 </body></html>`;
     const win=window.open("","_blank");if(!win){alert("Activa les finestres emergents.");return;}
     win.document.write(html);win.document.close();win.focus();setTimeout(()=>win.print(),600);
@@ -882,7 +1360,16 @@ ${informeText?`<div class="informe"><h2>📝 Informe complet</h2>${informeText}<
                 <button onClick={()=>setShowCidoImport(v=>!v)} className="bg-purple-600 hover:bg-purple-700 text-white text-xs font-semibold px-3 py-1.5 rounded-lg">{showCidoImport?"Tancar":"Importar correu"}</button>
               </div>
             </div>
-            <p className="text-xs text-purple-600 mb-2">Obre el correu de <strong>sgsi.svcSam@diba.cat</strong> al Gmail, selecciona tot el contingut (Ctrl+A), copia (Ctrl+C) i enganxa-ho aquí.</p>
+            <div className={`rounded-lg px-3 py-2 mb-2 flex items-center justify-between ${gmailConnected?"bg-green-50 border border-green-200":"bg-amber-50 border border-amber-200"}`}>
+              {gmailConnected?(<>
+                <span className="text-xs text-green-700">✅ Gmail connectat: <strong>{gmailUser||"..."}</strong> — els correus de CIDO i Gencat es llegiran automàticament</span>
+                <button onClick={disconnectGmail} className="text-xs text-red-500 hover:text-red-700 font-medium ml-2 shrink-0">Desconnectar</button>
+              </>):(<>
+                <span className="text-xs text-amber-700">Connecta Gmail per llegir automàticament els correus de licitacions</span>
+                <button onClick={connectGmail} className="bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold px-3 py-1.5 rounded-lg ml-2 shrink-0">🔗 Connectar Gmail</button>
+              </>)}
+            </div>
+            <p className="text-xs text-purple-600 mb-2">{gmailConnected?"O també pots importar manualment:":"Sense Gmail, pots importar manualment:"} Obre el correu de <strong>sgsi.svcSam@diba.cat</strong> al Gmail, selecciona tot el contingut (Ctrl+A), copia (Ctrl+C) i enganxa-ho aquí.</p>
             {showCidoImport&&<div className="space-y-2">
               <div className="w-full border-2 border-dashed border-purple-300 rounded-lg px-4 py-6 text-center cursor-text bg-stone-50 focus-within:ring-2 focus-within:ring-purple-400 focus-within:border-purple-400"
                 contentEditable suppressContentEditableWarning
@@ -958,6 +1445,20 @@ ${informeText?`<div class="informe"><h2>📝 Informe complet</h2>${informeText}<
         </>)}
         {activeTab==="plecs"&&(<>
           <div className="bg-blue-50 border border-blue-200 rounded-xl px-4 py-3 text-xs text-blue-700 flex items-center gap-2"><span>📄</span><span>Puja el PCAP/PPT en PDF. La IA extraurà totes les dades clau i farà un diagnòstic per a Servial. Podràs guardar-ho al Gestor com a Proposta.</span></div>
+          {plecHistorial.length>0&&<div className="bg-stone-50 rounded-xl border shadow-sm p-3">
+            <div className="flex items-center justify-between cursor-pointer" onClick={()=>setPlecHistorialOpen(!plecHistorialOpen)}>
+              <h4 className="text-sm font-semibold text-gray-700">📋 Últims {plecHistorial.length} anàlisis</h4>
+              <span className="text-gray-400 text-xs">{plecHistorialOpen?"▲":"▼"}</span>
+            </div>
+            {plecHistorialOpen&&<div className="mt-2 space-y-1">{plecHistorial.map((h,idx)=>{const r=h.results?.[0]||{};const imp=r.import_sense_iva?Number(r.import_sense_iva).toLocaleString("ca-ES",{minimumFractionDigits:0})+" €":"";return(<div key={h.id} className="flex items-center gap-2 bg-gray-50 rounded-lg px-3 py-2 text-xs hover:bg-gray-100 border border-gray-200">
+              <span className="bg-blue-100 text-blue-700 font-bold px-1.5 py-0.5 rounded text-xs shrink-0">{idx+1}</span>
+              <span className="text-gray-400 shrink-0">{h.date}</span>
+              <div className="flex-1 min-w-0"><div className="font-medium text-gray-800 truncate" title={r.objecte||h.nom}>{r.objecte||h.nom}</div><div className="text-gray-400 text-xs">{r.organisme?r.organisme+" · ":""}{imp}{r.termini_presentacio?` · ⏰ ${r.termini_presentacio}`:""}</div></div>
+              <button onClick={()=>{setPlecResults(h.results||[]);setPlecRawText(h.rawText||"");setPlecNom(h.nom);setPlecView(h.results?.length?"taula":"text");}} className="text-blue-500 hover:text-blue-700 shrink-0" title="Veure">👁️</button>
+              <button onClick={()=>exportarPlecPDF(h.results||[],h.rawText||"",h.nom)} className="text-green-500 hover:text-green-700 shrink-0" title="Descarregar PDF">📥</button>
+              <button onClick={()=>eliminarPlecHistorial(h.id)} className="text-red-400 hover:text-red-600 shrink-0" title="Eliminar">🗑️</button>
+            </div>);})}</div>}
+          </div>}
           <div className="bg-stone-50 rounded-xl border shadow-sm p-4 space-y-4">
             <h3 className="font-semibold text-gray-700">📂 Documents de la licitació</h3>
             <div className="grid grid-cols-2 gap-3">
@@ -988,7 +1489,7 @@ ${informeText?`<div class="informe"><h2>📝 Informe complet</h2>${informeText}<
               </div>
             </div>
             {plecView==="taula"&&plecResults.map((r,idx)=>(<div key={idx} className="space-y-3">
-              <div className="bg-stone-50 rounded-xl border shadow-sm p-4"><h3 className="font-semibold text-gray-700 mb-3">📋 Dades bàsiques</h3><div className="grid grid-cols-2 gap-x-6 gap-y-2 text-xs">{[["Expedient",r.expedient],["Objecte",r.objecte],["Organisme",r.organisme],["CPV",r.cpv],["Import s/IVA",r.import_sense_iva?`${Number(r.import_sense_iva).toLocaleString("ca-ES")} €`:""],["Import c/IVA",r.import_amb_iva?`${Number(r.import_amb_iva).toLocaleString("ca-ES")} €`:""],["Valor estimat",r.valor_estimat?`${Number(r.valor_estimat).toLocaleString("ca-ES")} €`:""],["Termini execució",r.termini_execucio],["Termini presentació",r.termini_presentacio]].filter(([,v])=>v).map(([k,v])=>(<div key={k} className="flex gap-2"><span className="text-gray-400 shrink-0 w-36">{k}:</span><span className="font-medium text-gray-800">{v}</span></div>))}</div></div>
+              <div className="bg-stone-50 rounded-xl border shadow-sm p-4"><h3 className="font-semibold text-gray-700 mb-3">📋 Dades bàsiques</h3>{r.termini_presentacio&&<div className="bg-red-50 border border-red-200 rounded-lg px-3 py-2 mb-3 flex items-center gap-2"><span className="text-red-600 text-lg">⏰</span><span className="text-sm font-bold text-red-800">Data presentació oferta: {r.termini_presentacio}</span></div>}<div className="grid grid-cols-2 gap-x-6 gap-y-2 text-xs">{[["Expedient",r.expedient],["Objecte",r.objecte],["Organisme",r.organisme],["CPV",r.cpv],["Import s/IVA",r.import_sense_iva?`${Number(r.import_sense_iva).toLocaleString("ca-ES")} €`:""],["Import c/IVA",r.import_amb_iva?`${Number(r.import_amb_iva).toLocaleString("ca-ES")} €`:""],["Valor estimat",r.valor_estimat?`${Number(r.valor_estimat).toLocaleString("ca-ES")} €`:""],["Termini execució",r.termini_execucio]].filter(([,v])=>v).map(([k,v])=>(<div key={k} className="flex gap-2"><span className="text-gray-400 shrink-0 w-36">{k}:</span><span className="font-medium text-gray-800">{v}</span></div>))}</div></div>
               <div className="bg-stone-50 rounded-xl border shadow-sm p-4"><h3 className="font-semibold text-gray-700 mb-3">🏆 Classificació i solvència (LCSP)</h3>
                 {r.exigeix_classificacio!==false&&r.classificacio_requerida?.length>0?(<>
                   <div className="bg-blue-50 border border-blue-200 rounded-lg px-3 py-2 mb-3 text-xs text-blue-800">
@@ -1003,7 +1504,73 @@ ${informeText?`<div class="informe"><h2>📝 Informe complet</h2>${informeText}<
                 </>)}
                 <div className="space-y-1 text-xs">{r.solvencia_economica&&<div className="flex gap-2"><span className="text-gray-400 shrink-0 w-36">Solvència econòmica:</span><span className="font-medium text-gray-800">{r.solvencia_economica}</span></div>}{r.solvencia_tecnica&&<div className="flex gap-2"><span className="text-gray-400 shrink-0 w-36">Solvència tècnica:</span><span className="font-medium text-gray-800">{r.solvencia_tecnica}</span></div>}</div>
               </div>
-              {((r.criteris_automatics?.length>0)||(r.criteris_judici_valor?.length>0))&&<div className="bg-stone-50 rounded-xl border shadow-sm p-4"><h3 className="font-semibold text-gray-700 mb-3">⚖️ Criteris d'adjudicació</h3>{r.criteris_automatics?.length>0&&<div className="mb-3"><p className="text-xs font-semibold text-gray-500 mb-2">Criteris automàtics</p><div className="space-y-1.5">{r.criteris_automatics.map((c,i)=>(<div key={i} className="bg-blue-50 rounded-lg px-3 py-2 text-xs"><div className="flex justify-between"><span className="font-semibold text-blue-800">{c.nom}</span><span className="font-bold text-blue-700">{c.punts} pts</span></div>{c.formula&&<p className="text-blue-600 mt-0.5 font-mono text-xs">{c.formula}</p>}</div>))}</div></div>}{r.criteris_judici_valor?.length>0&&<div><p className="text-xs font-semibold text-gray-500 mb-2">Criteris judici de valor</p><div className="space-y-1.5">{r.criteris_judici_valor.map((c,i)=>(<div key={i} className="bg-amber-50 rounded-lg px-3 py-2 text-xs flex justify-between"><span className="font-semibold text-amber-800">{c.nom}</span><span className="font-bold text-amber-700">{c.punts} pts</span></div>))}</div></div>}<div className="mt-2 pt-2 border-t text-xs text-gray-500 flex justify-between"><span>Automàtics: <strong>{(r.criteris_automatics||[]).reduce((s,c)=>s+(c.punts||0),0)} pts</strong></span><span>Judici valor: <strong>{(r.criteris_judici_valor||[]).reduce((s,c)=>s+(c.punts||0),0)} pts</strong></span></div></div>}
+              {((r.criteris_automatics?.length>0)||(r.criteris_judici_valor?.length>0))&&(()=>{
+                const ptsAuto=(r.criteris_automatics||[]).reduce((s,c)=>s+(c.punts||0),0);
+                const ptsJV=(r.criteris_judici_valor||[]).reduce((s,c)=>s+(c.punts||0),0);
+                const total=r.total_punts||ptsAuto+ptsJV||100;
+                const pctAuto=Math.round(ptsAuto/total*100);
+                const pctJV=Math.round(ptsJV/total*100);
+                const BAND_COLORS=["bg-purple-100 text-purple-800 border-purple-300","bg-amber-100 text-amber-800 border-amber-300","bg-green-100 text-green-800 border-green-300","bg-blue-100 text-blue-800 border-blue-300"];
+                return <div className="space-y-3">
+                {/* SOBRE C - AUTOMÀTICS */}
+                <div className="bg-stone-50 rounded-xl border shadow-sm p-4">
+                  <div className="flex justify-between items-start mb-3">
+                    <div><h3 className="font-semibold text-gray-700">Sobre C — Criteris automàtics</h3>
+                    {r.requisits_memoria?.max_pagines&&<p className="text-xs text-gray-400 mt-0.5">Sense memòria · Avaluació automàtica</p>}</div>
+                    <div className="text-right"><span className="text-2xl font-bold text-blue-700">{ptsAuto} pts</span><div className="text-xs text-gray-400">{pctAuto}% del total</div></div>
+                  </div>
+                  <div className="space-y-2">{(r.criteris_automatics||[]).map((c,i)=>(<div key={i} className="bg-blue-50 border border-blue-200 rounded-lg px-3 py-2.5">
+                    <div className="flex justify-between items-center"><span className="text-sm font-semibold text-blue-800">{c.nom}</span><span className="font-bold text-blue-700 text-sm">{c.punts} pts</span></div>
+                    {c.formula&&<p className="text-blue-600 mt-1 text-xs font-mono bg-blue-100/50 rounded px-2 py-1">{c.formula}</p>}
+                  </div>))}</div>
+                </div>
+
+                {/* SOBRE B - JUDICI DE VALOR */}
+                {(r.criteris_judici_valor||[]).length>0&&<div className="bg-stone-50 rounded-xl border shadow-sm p-4">
+                  <div className="flex justify-between items-start mb-1">
+                    <div><h3 className="font-semibold text-gray-700">Sobre B — Criteris subjectes a judici de valor</h3>
+                    {r.requisits_memoria?.max_pagines&&<p className="text-xs text-gray-400 mt-0.5">Memòria d'organització i execució · màx. {r.requisits_memoria.max_pagines} pàgines {r.requisits_memoria.format||"DIN A4"}</p>}</div>
+                    <div className="text-right"><span className="text-2xl font-bold text-amber-700">{ptsJV} pts</span><div className="text-xs text-gray-400">{pctJV}% del total</div></div>
+                  </div>
+                  {r.llindar_minim_tecnic?.te_llindar&&<div className="bg-red-50 border border-red-200 rounded-lg px-3 py-2 mb-3 text-xs text-red-800"><strong>⚠️ Llindar mínim tècnic:</strong> {r.llindar_minim_tecnic.puntuacio_minima} pts — {r.llindar_minim_tecnic.consequencia||"Per sota del llindar, l'oferta queda exclosa"}</div>}
+                  <div className="space-y-3 mt-3">{(r.criteris_judici_valor||[]).map((c,i)=>(<div key={i} className="bg-white border border-gray-200 rounded-xl overflow-hidden shadow-sm">
+                    <div className="flex justify-between items-center px-4 py-3 bg-gradient-to-r from-gray-50 to-white border-b border-gray-100">
+                      <div className="flex items-center gap-2"><span className="bg-gray-700 text-white text-xs font-bold w-6 h-6 rounded-full flex items-center justify-center">{i+1}</span><span className="font-semibold text-gray-800">{c.nom}</span></div>
+                      <span className="font-bold text-amber-700 text-lg">{c.punts} pts</span>
+                    </div>
+                    <div className="px-4 py-3 space-y-2.5">
+                      {c.subcriteris?.length>0&&<ul className="space-y-1">{c.subcriteris.map((sc,j)=>(<li key={j} className="text-xs text-gray-600 flex gap-2"><span className="text-gray-400">•</span><span>{typeof sc==="object"?(sc.nom||sc.name||JSON.stringify(sc)):sc}</span></li>))}</ul>}
+                      {c.que_valoren&&<div className="text-xs text-gray-500 italic bg-gray-50 rounded px-2 py-1.5">{c.que_valoren}</div>}
+                      {c.bandes_puntuacio?.length>0&&<div className="flex flex-wrap gap-1.5 mt-1">{c.bandes_puntuacio.map((b,k)=>(<span key={k} className={`text-xs font-medium px-2.5 py-1 rounded-full border ${BAND_COLORS[k%BAND_COLORS.length]}`}>{b.rang} pts: {b.descripcio}</span>))}</div>}
+                      {c.inconsistencia&&<div className="bg-yellow-50 border border-yellow-300 rounded-lg px-3 py-2 text-xs text-yellow-800 mt-1"><strong>⚠️ Inconsistència detectada al PCAP:</strong> {c.inconsistencia}</div>}
+                    </div>
+                  </div>))}</div>
+                </div>}
+
+                {/* REQUISITS MEMÒRIA */}
+                {r.requisits_memoria&&(r.requisits_memoria.max_pagines||r.requisits_memoria.font||r.requisits_memoria.interlineat)&&<div className="bg-stone-50 rounded-xl border shadow-sm p-4">
+                  <h3 className="font-semibold text-gray-700 mb-2">📝 Requisits formals de la memòria</h3>
+                  <div className="grid grid-cols-2 gap-2 text-xs">{[["Màx. pàgines",r.requisits_memoria.max_pagines],["Format",r.requisits_memoria.format],["Font/mida",r.requisits_memoria.font],["Interlineat",r.requisits_memoria.interlineat],["Annexos",r.requisits_memoria.annexos],["Penalització excedir",r.requisits_memoria.penalitzacio_excedir]].filter(([,v])=>v).map(([k,v])=>(<div key={k} className="flex gap-2"><span className="text-gray-400 shrink-0 w-36">{k}:</span><span className="font-medium text-gray-800">{v}</span></div>))}</div>
+                </div>}
+
+                {/* TEMERITAT I EXCLUSIÓ */}
+                {(r.temeritat?.formula||r.criteris_exclusio?.filter(e=>e).length>0)&&<div className="bg-red-50 rounded-xl border border-red-200 shadow-sm p-4">
+                  <h3 className="font-semibold text-red-800 mb-2">🚫 Criteris d'exclusió i temeritat</h3>
+                  {r.temeritat?.formula&&<div className="text-xs space-y-1 mb-2"><div className="flex gap-2"><span className="text-red-400 shrink-0 w-36">Fórmula temeritat:</span><span className="font-medium text-red-800">{r.temeritat.formula}</span></div>{r.temeritat.percentatge&&<div className="flex gap-2"><span className="text-red-400 shrink-0 w-36">% baixa temerària:</span><span className="font-medium text-red-800">{r.temeritat.percentatge}</span></div>}{r.temeritat.procediment&&<div className="flex gap-2"><span className="text-red-400 shrink-0 w-36">Procediment:</span><span className="font-medium text-red-800">{r.temeritat.procediment}</span></div>}{r.temeritat.consequencia&&<div className="flex gap-2"><span className="text-red-400 shrink-0 w-36">Conseqüència:</span><span className="font-medium text-red-800">{r.temeritat.consequencia}</span></div>}</div>}
+                  {r.criteris_exclusio?.filter(e=>e).length>0&&<div className="mt-2"><p className="text-xs font-semibold text-red-700 mb-1">Causes d'exclusió:</p><ul className="space-y-0.5">{r.criteris_exclusio.filter(e=>e).map((e,i)=>(<li key={i} className="text-xs text-red-700 flex gap-2"><span>❌</span><span>{e}</span></li>))}</ul></div>}
+                </div>}
+
+                {/* RESUM ESTRATÈGIC */}
+                <div className="bg-gradient-to-r from-gray-700 to-gray-800 rounded-xl p-4 text-white">
+                  <h3 className="font-semibold mb-2">📊 Resum estratègic</h3>
+                  <div className="flex gap-4 mb-2">
+                    <div className="flex-1 bg-white/10 rounded-lg p-2.5 text-center"><div className="text-xl font-bold">{ptsAuto}</div><div className="text-xs opacity-70">Automàtics ({pctAuto}%)</div></div>
+                    <div className="flex-1 bg-white/10 rounded-lg p-2.5 text-center"><div className="text-xl font-bold">{ptsJV}</div><div className="text-xs opacity-70">Judici valor ({pctJV}%)</div></div>
+                    <div className="flex-1 bg-white/10 rounded-lg p-2.5 text-center"><div className="text-xl font-bold">{total}</div><div className="text-xs opacity-70">Total punts</div></div>
+                  </div>
+                  <div className={`text-xs font-semibold px-3 py-1.5 rounded-full inline-block ${pctAuto>=60?"bg-blue-400/30":"bg-amber-400/30"}`}>{pctAuto>=60?"💰 PREU DOMINANT — Prioritzar oferta econòmica agressiva":"📝 QUALITAT DOMINANT — Prioritzar memòria tècnica detallada"}</div>
+                </div>
+              </div>;})()}
               <div className="bg-stone-50 rounded-xl border shadow-sm p-4"><h3 className="font-semibold text-gray-700 mb-3">🔒 Garanties i condicions</h3><div className="space-y-1 text-xs">{r.garantia_definitiva&&<div className="flex gap-2"><span className="text-gray-400 shrink-0 w-36">Garantia definitiva:</span><span className="font-medium text-gray-800">{r.garantia_definitiva}</span></div>}{r.visita_obra&&<div className="flex gap-2"><span className="text-gray-400 shrink-0 w-36">Visita d'obra:</span><span className="font-medium text-gray-800">{r.visita_obra}</span></div>}{r.condicions_especials&&<div className="flex gap-2"><span className="text-gray-400 shrink-0 w-36">Condicions especials:</span><span className="font-medium text-gray-800">{r.condicions_especials}</span></div>}</div></div>
               {r.diagnosic_servial&&<div className="bg-amber-50 border border-amber-200 rounded-xl p-4"><h3 className="font-semibold text-amber-800 mb-2">⚠️ Diagnòstic per a Servial</h3><p className="text-xs text-amber-900 leading-relaxed whitespace-pre-wrap">{r.diagnosic_servial}</p></div>}
             </div>))}
