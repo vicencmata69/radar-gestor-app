@@ -1,3 +1,41 @@
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
+
+/* Scrollbar visible i estilitzada per la taula del gestor */
+.gestor-table-wrap::-webkit-scrollbar,
+.overflow-x-auto::-webkit-scrollbar,
+.overflow-y-auto::-webkit-scrollbar {
+  width: 12px;
+  height: 16px;
+}
+.gestor-table-wrap::-webkit-scrollbar-track,
+.overflow-x-auto::-webkit-scrollbar-track,
+.overflow-y-auto::-webkit-scrollbar-track {
+  background: #d1d5db;
+  border-radius: 8px;
+}
+.gestor-table-wrap::-webkit-scrollbar-thumb,
+.overflow-x-auto::-webkit-scrollbar-thumb,
+.overflow-y-auto::-webkit-scrollbar-thumb {
+  background: #6b7280;
+  border-radius: 8px;
+  border: 2px solid #d1d5db;
+}
+.gestor-table-wrap::-webkit-scrollbar-thumb:hover,
+.overflow-x-auto::-webkit-scrollbar-thumb:hover,
+.overflow-y-auto::-webkit-scrollbar-thumb:hover {
+  background: #4b5563;
+}
+/* Firefox — scrollbar SEMPRE visible */
+.gestor-table-wrap,
+.overflow-x-auto,
+.overflow-y-auto {
+  scrollbar-width: thin;
+  scrollbar-color: #6b7280 #d1d5db;
+}
+/* Forçar overflow visible */
+.gestor-table-wrap {
+  overflow-x: scroll !important;
+  overflow-y: auto !important;
+}
