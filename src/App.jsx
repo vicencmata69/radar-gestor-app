@@ -317,6 +317,37 @@ const inferClassificacio = (cpv, imp) => {
   return grups.slice(0,1).map(g => ({ grup: g.charAt(0), subgrup: g.slice(1), categoria: cat }));
 };
 const parseJSON = raw => { if(!raw)return null; if(raw.trim().startsWith("["))try{return JSON.parse(raw.trim());}catch(e){} const m1=raw.match(/\[[\s\S]*\]/); if(m1)try{return JSON.parse(m1[0]);}catch(e){try{return JSON.parse(m1[0].replace(/,(\s*[}\]])/g,"$1"));}catch(e2){}} const m2=raw.match(/```(?:json)?\s*([\s\S]*?)\s*```/); if(m2)try{return JSON.parse(m2[1]);}catch(e){} return null; };
+// Robust JSON parser for AI plec output: tries plain parse, code-fence strip,
+// trailing-comma stripping, malformed-key recovery, and array/object extraction.
+// Returns null on failure.
+const parseJSONLenient = raw => {
+  if(!raw)return null;
+  const stripCommas = s => s.replace(/,(\s*[}\]])/g,"$1");
+  // AI sometimes drops the `:"` between key and a value starting with `<` or `>`
+  // (e.g. produces `"rang">20%"` instead of `"rang":">20%"`). Re-insert it.
+  const fixOperatorKeys = s => s.replace(/"(\w+)"([<>])/g,'"$1":"$2');
+  const tryAll = s => {
+    if(!s)return null;
+    try{return JSON.parse(s);}catch(e){}
+    try{return JSON.parse(stripCommas(s));}catch(e){}
+    try{return JSON.parse(fixOperatorKeys(s));}catch(e){}
+    try{return JSON.parse(stripCommas(fixOperatorKeys(s)));}catch(e){}
+    return null;
+  };
+  // 1) Direct parse
+  const direct = tryAll(raw.trim());
+  if(direct!==null)return direct;
+  // 2) Strip code fence
+  const fence = raw.match(/```(?:json)?\s*([\s\S]*?)\s*```/);
+  if(fence){const r=tryAll(fence[1]);if(r!==null)return r;}
+  // 3) Largest array
+  const arr = raw.match(/\[[\s\S]*\]/);
+  if(arr){const r=tryAll(arr[0]);if(r!==null)return r;}
+  // 4) Largest object
+  const obj = raw.match(/\{[\s\S]*\}/);
+  if(obj){const r=tryAll(obj[0]);if(r!==null)return r;}
+  return null;
+};
 const fmt = n => { const num=Number(n); if(!n&&n!==0)return"---"; if(isNaN(num))return"---"; return num.toLocaleString("ca-ES",{minimumFractionDigits:2,maximumFractionDigits:2})+" EUR"; };
 const norm = s => String(s||"").toLowerCase().trim().replace(/\s+/g," ");
 const sim = (a,b) => { a=norm(a);b=norm(b); if(!a||!b)return 0; if(a===b)return 1; const lo=a.length>b.length?a:b,sh=a.length>b.length?b:a; if(lo.includes(sh)&&sh.length>15)return 0.9; const wa=a.split(" ").filter(w=>w.length>3),wb=new Set(b.split(" ").filter(w=>w.length>3)); if(!wa.length)return 0; return wa.filter(w=>wb.has(w)).length/Math.max(wa.length,wb.size); };
@@ -1849,9 +1880,18 @@ NO generis JSON ni informe final en aquesta part; només la transcripció litera
       setPlecStatus("");
       const jsonMatch=raw.match(/--JSON_INICI--([\s\S]*?)--JSON_FI--/);
       let parsedResults=[];
-      if(jsonMatch){
-        try{const parsed=JSON.parse(jsonMatch[1].trim());parsedResults=Array.isArray(parsed)?parsed:[parsed];setPlecResults(parsedResults);setPlecView("taula");}
-        catch(e){setPlecError("Informe generat però no s'ha pogut parsejar el JSON. Consulta la pestanya 📝 Informe.");setPlecView("text");}
+      // Try parsing whatever's between markers; fall back to the full raw if markers missing.
+      const candidate = jsonMatch ? jsonMatch[1] : raw;
+      const parsed = parseJSONLenient(candidate);
+      if(parsed){
+        parsedResults = Array.isArray(parsed) ? parsed : [parsed];
+        setPlecResults(parsedResults);
+        setPlecView("taula");
+      } else if(jsonMatch){
+        // We had markers but couldn't recover JSON — log the snippet for debugging.
+        try{JSON.parse(jsonMatch[1].trim());}catch(e){console.error("Plec JSON parse error:",e.message,"\nSnippet head:",jsonMatch[1].slice(0,200),"\nSnippet tail:",jsonMatch[1].slice(-200));}
+        setPlecError("Informe generat però no s'ha pogut parsejar el JSON. Consulta la pestanya 📝 Informe.");
+        setPlecView("text");
       } else {
         setPlecView("text");
       }
