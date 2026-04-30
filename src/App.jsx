@@ -734,17 +734,16 @@ function GestorTab({refreshKey=0}){
   const ESTATS_ALLIBERA_CODI=["DESCARTADA"];
   const genCode=list=>{
     const now=new Date(),yy=String(now.getFullYear()).slice(-2),mm=String(now.getMonth()+1).padStart(2,"0");
-    const prefixAny=`${yy}.`;// comptar per ANY complet (correlatiu anual)
-    const usats=new Set();
+    const prefixAny=`${yy}.`;// correlatiu anual estrictament creixent (max+1)
+    let maxNum=0;
     list.forEach(l=>{
       if(!l.codi_obra)return;
-      // Codis NP s'alliberen — NO compten com a usats
-      if(/^NP\d*-/.test(l.codi_obra))return;
-      if(l.codi_obra.startsWith(prefixAny)){const n=codiNum(l.codi_obra);if(n<9999)usats.add(n);}
+      // Els codis NP- conserven el seu número original (NO s'alliberen): es normalitzen
+      // traient el prefix per llegir l'any/mes/núm subjacent.
+      const stripped=l.codi_obra.replace(/^NP\d*-/,"");
+      if(stripped.startsWith(prefixAny)){const n=codiNum(stripped);if(n<9999&&n>maxNum)maxNum=n;}
     });
-    let num=1;
-    while(usats.has(num))num++;
-    return`${yy}.${mm}.${String(num).padStart(3,"0")}-ED`;
+    return`${yy}.${mm}.${String(maxNum+1).padStart(3,"0")}-ED`;
   };
   const onEstat=(id,estat)=>{
     const l=lic.find(x=>x.id===id);if(!l)return;
@@ -752,7 +751,7 @@ function GestorTab({refreshKey=0}){
     if(estat==="EN ESTUDI"&&!l.codi_obra){
       setConfModal({id,newEstat:estat,code:genCode(lic)});return;
     }
-    // NO PRESENTADA → conserva el codi amb prefix NPx-, allibera el número per reutilitzar
+    // NO PRESENTADA → conserva el codi original amb prefix NPx- (el número queda perdut, NO es reutilitza)
     if(estat==="NO PRESENTADA"&&l.codi_obra&&!/^NP\d+-/.test(l.codi_obra)){
       // Trobar el pròxim número NP
       let maxNP=0;
