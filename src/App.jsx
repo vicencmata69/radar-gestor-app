@@ -480,7 +480,7 @@ function GestorTab({refreshKey=0}){
   const [form,setForm]=useState(emptyForm);
   const [editId,setEditId]=useState(null);
   const [search,setSearch]=useState("");
-  const [fEstat,setFEstat]=useState("");
+  const [fEstat,setFEstat]=useState("ACTIVES");
   const [fTipus,setFTipus]=useState("");
   const [colFilters,setColFilters]=useState({});
   const [activeColFilter,setActiveColFilter]=useState(null);
@@ -880,7 +880,7 @@ function GestorTab({refreshKey=0}){
         <input placeholder="Cerca codi, licitacio, client, poblacio..." value={search} onChange={e=>setSearch(e.target.value)} className="border rounded-lg px-3 py-1.5 text-sm flex-1 min-w-48"/>
         <select value={fEstat} onChange={e=>setFEstat(e.target.value)} className="border rounded-lg px-2 py-1.5 text-sm text-gray-600"><option value="ACTIVES">📌 Actives (En Estudi + Proposta)</option><option value="SENSE_DESC">Sense descartades</option><option value="">Tots els estats</option><option disabled>──────────</option>{ESTATS.map(s=><option key={s} value={s}>{s}</option>)}</select>
         <select value={fTipus} onChange={e=>setFTipus(e.target.value)} className="border rounded-lg px-2 py-1.5 text-sm text-gray-600"><option value="">Public / Privat</option>{tipus.map(t=><option key={t}>{t}</option>)}</select>
-        {(fEstat!==""||fTipus||search||hasActiveColFilters)&&<button onClick={()=>{setSearch("");setFEstat("");setFTipus("");setColFilters({});}} className="text-xs text-red-500 hover:underline px-1">Netejar filtres</button>}
+        {(fEstat!=="ACTIVES"||fTipus||search||hasActiveColFilters)&&<button onClick={()=>{setSearch("");setFEstat("ACTIVES");setFTipus("");setColFilters({});}} className="text-xs text-red-500 hover:underline px-1">Netejar filtres</button>}
         {hasActiveColFilters&&<span className="text-xs text-blue-600 bg-blue-50 px-2 py-0.5 rounded-full">Filtres columna actius</span>}
       </div>
       {calSt&&<div className="mb-2 px-3 py-2 bg-blue-50 border border-blue-200 rounded-lg text-sm text-blue-700">{calSt}</div>}
