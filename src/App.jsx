@@ -709,8 +709,10 @@ function GestorTab({refreshKey=0}){
     if(!isSupabaseConfigured())return;
     const channel=supabase.channel("licitacions-changes")
       .on("postgres_changes",{event:"*",schema:"public",table:"licitacions"},payload=>{
-        if(payload.eventType==="INSERT")setLic(prev=>[payload.new,...prev.filter(l=>l.id!==payload.new.id)]);
-        else if(payload.eventType==="UPDATE")setLic(prev=>prev.map(l=>l.id===payload.new.id?payload.new:l));
+        // MERGE en lloc de REPLACE: preserva camps locals que no venen al payload
+        // (útil per columnes que existeixen en local però encara no a Supabase, com sobres)
+        if(payload.eventType==="INSERT")setLic(prev=>{const exist=prev.find(l=>l.id===payload.new.id);return exist?prev.map(l=>l.id===payload.new.id?{...l,...payload.new}:l):[payload.new,...prev];});
+        else if(payload.eventType==="UPDATE")setLic(prev=>prev.map(l=>l.id===payload.new.id?{...l,...payload.new}:l));
         else if(payload.eventType==="DELETE")setLic(prev=>prev.filter(l=>l.id!==payload.old.id));
       })
       .subscribe();
@@ -725,8 +727,26 @@ function GestorTab({refreshKey=0}){
     })();
   },[refreshKey,loaded]);
 
+  // Detecta si existeix la columna `sobres` a Supabase. Si no, l'app
+  // prescindeix d'enviar-la als upserts perquè no fallin. Es comprova
+  // un cop al carregar; quan l'usuari afegeixi la columna i refresqui,
+  // s'activarà automàticament.
+  const [sobresEnabled,setSobresEnabled]=useState(true);
+  useEffect(()=>{
+    if(!isSupabaseConfigured())return;
+    (async()=>{
+      try{
+        const{error}=await supabase.from("licitacions").select("sobres").limit(1);
+        if(error&&/sobres/i.test(error.message||"")){
+          setSobresEnabled(false);
+          console.warn("[gestor] Columna 'sobres' no existeix. Executa: ALTER TABLE licitacions ADD COLUMN IF NOT EXISTS sobres jsonb DEFAULT '{}'::jsonb;");
+        }
+      }catch(e){}
+    })();
+  },[]);
+
   const save=async list=>{setLic(list);if(!isSupabaseConfigured())try{localStorage.setItem(SK,JSON.stringify(list));}catch(e){}};
-  const cleanForDB=item=>{const c={...item};if(c.import_pec_sense_iva===""||c.import_pec_sense_iva==null)c.import_pec_sense_iva=0;else c.import_pec_sense_iva=Number(c.import_pec_sense_iva)||0;return c;};
+  const cleanForDB=item=>{const c={...item};if(c.import_pec_sense_iva===""||c.import_pec_sense_iva==null)c.import_pec_sense_iva=0;else c.import_pec_sense_iva=Number(c.import_pec_sense_iva)||0;if(!sobresEnabled)delete c.sobres;return c;};
   const saveOne=async item=>{if(!isSupabaseConfigured())return;try{await supabase.from("licitacions").upsert(cleanForDB(item));}catch(e){console.error("Save error:",e);}};
   const logCanviEstat=async(licitacioId,estatAnterior,estatNou,codiObra)=>{try{await supabase.from("licitacions_log").insert({licitacio_id:licitacioId,estat_anterior:estatAnterior||"",estat_nou:estatNou,codi_obra:codiObra||""});}catch(e){console.error("Log error:",e);}};
   const saveAll=async list=>{if(!isSupabaseConfigured())return;try{await supabase.from("licitacions").upsert(list.map(cleanForDB));}catch(e){console.error("SaveAll error:",e);}};
@@ -887,7 +907,7 @@ function GestorTab({refreshKey=0}){
       {filtered.length===0?<div className="text-center py-16 text-gray-400"><div className="text-4xl mb-2">📋</div><div className="font-semibold">{lic.length===0?"Cap licitacio":"Cap resultat"}</div></div>
         :<div className="gestor-table-wrap rounded-xl border border-gray-200 shadow-sm" style={{overflowX:"auto"}} onClick={()=>setActiveColFilter(null)}><table className="text-xs" style={{minWidth:"1900px"}}><thead className="sticky top-0 z-10"><tr className="bg-gray-100 border-b border-gray-200 text-gray-500 uppercase">{(()=>{
           const FILTERABLE={codi_obra:{key:"codi_obra",vals:()=>[...new Set(lic.map(l=>l.codi_obra||"---"))].sort()},estat:{key:"estat",vals:()=>ESTATS},public_privat:{key:"public_privat",vals:()=>tipus},poblacio:{key:"poblacio",vals:()=>[...new Set(lic.map(l=>l.poblacio||"---"))].sort()},client:{key:"client",vals:()=>[...new Set(lic.map(l=>l.client||"---"))].sort()},data_presentacio:{key:"data_presentacio",vals:()=>[...new Set(lic.map(l=>l.data_presentacio||"---"))].sort()},termini:{key:"termini",vals:()=>[...new Set(lic.map(l=>l.termini||"---"))].sort()},import_pec:{key:"import_pec",vals:()=>[...new Set(lic.map(l=>l.import_pec_sense_iva?fmt(l.import_pec_sense_iva):"---"))].sort((a,b)=>{const na=parseFloat(a.replace(/\./g,"").replace(",",".")),nb=parseFloat(b.replace(/\./g,"").replace(",","."));return(isNaN(na)?0:na)-(isNaN(nb)?0:nb);})},classificacio:{key:"classificacio",vals:()=>[...new Set(lic.map(l=>l.classificacio||"---"))].sort()},tecnica:{key:"tecnica",vals:()=>["Sí","No"]}};
-          const cols=[["Codi Obra","90px","codi_obra"],["Licitacio","280px"],["Client","180px","client"],["P/P","60px","public_privat"],["Poblacio","120px","poblacio"],["Estat","110px","estat"],["Data Present.","160px","data_presentacio"],["Termini","80px","termini"],["Import s/IVA","110px","import_pec"],["Classif.","80px","classificacio"],["Criteris","200px"],["Tècnica","65px","tecnica"],["Aval","70px"],["Sobres","120px"],["Comentaris","400px"],["🔗 Obra","80px"],["🌐 Publicació","80px"],["","70px"]];
+          const cols=[["Codi Obra","90px","codi_obra"],["Licitacio","280px"],["Client","180px","client"],["P/P","60px","public_privat"],["Poblacio","120px","poblacio"],["Estat","110px","estat"],["Data Present.","160px","data_presentacio"],["Termini","80px","termini"],["Import s/IVA","110px","import_pec"],["Classif.","80px","classificacio"],["Criteris","200px"],["Tècnica","65px","tecnica"],["Aval","70px"],["Sobres","200px"],["Comentaris","400px"],["🔗 Obra","80px"],["🌐 Publicació","80px"],["","70px"]];
           return cols.map(([h,w,filterKey])=>{
             const fDef=filterKey?FILTERABLE[filterKey]:null;
             const isActive=colFilters[filterKey]?.length>0;
@@ -907,8 +927,20 @@ function GestorTab({refreshKey=0}){
   const isPres=l.estat==="PRESENTADA"||l.estat==="ADJUDICADA"||l.estat==="NO ADJUDICADA";
   if(!isPub||!isPres)return<span className="text-xs text-gray-300">—</span>;
   const sobres=l.sobres||{};
-  const opts=[["unic","Sobre únic"],["1A","Sobre 1/A"],["2B","Sobre 2/B"],["3C","Sobre 3/C"]];
-  return<div className="space-y-0.5">{opts.map(([key,label])=>{const val=sobres[key];return<button key={key} onClick={()=>{const next=val===true?false:val===false?null:true;const newSobres={...sobres,[key]:next};const updated={...l,sobres:newSobres};save(lic.map(x=>x.id===l.id?updated:x));saveOne(updated);}} className={`block w-full text-left text-xs px-1.5 py-0.5 rounded ${val===true?"bg-green-100 text-green-700 font-semibold":val===false?"bg-red-100 text-red-600":"bg-gray-50 text-gray-400"}`}>{val===true?`✅ ${label}`:val===false?`❌ ${label}`:`⬜ ${label}`}</button>;})}</div>;
+  const tipus=sobres.tipus||"";
+  const obert=sobres.obert||{};
+  const llista=tipus==="unic"?[["unic","Sobre únic"]]:tipus==="dos"?[["1A","Sobre 1/A"],["2B","Sobre 2/B"]]:tipus==="tres"?[["1A","Sobre 1/A"],["2B","Sobre 2/B"],["3C","Sobre 3/C"]]:[];
+  const updateSobres=newSobres=>{const updated={...l,sobres:newSobres};save(lic.map(x=>x.id===l.id?updated:x));saveOne(updated);};
+  const todayStr=()=>{const n=new Date();return`${String(n.getDate()).padStart(2,"0")}/${String(n.getMonth()+1).padStart(2,"0")}/${n.getFullYear()}`;};
+  return<div className="space-y-1">
+    <select value={tipus} onChange={e=>updateSobres({...sobres,tipus:e.target.value,obert:sobres.obert||{}})} className={`text-xs border rounded px-1 py-0.5 w-full ${tipus?"bg-blue-50 text-blue-700 font-semibold":"bg-amber-50 text-amber-700"}`}>
+      <option value="">— Tria tipus —</option>
+      <option value="unic">Sobre únic</option>
+      <option value="dos">Dos sobres</option>
+      <option value="tres">Tres sobres</option>
+    </select>
+    {llista.length>0&&<table className="text-[11px] w-full"><tbody>{llista.map(([key,label])=>{const data=obert[key];const isOpen=!!data;return<tr key={key} className="border-t border-gray-100"><td className="pr-1 py-0.5 text-gray-700 whitespace-nowrap">{label}</td><td className="text-center w-5"><input type="checkbox" className="w-3 h-3 cursor-pointer accent-green-600" checked={isOpen} onChange={e=>{const newObert={...obert};if(e.target.checked)newObert[key]=todayStr();else delete newObert[key];updateSobres({...sobres,obert:newObert});}}/></td><td className="text-[10px] text-gray-500 pl-1">{isOpen?<span className="text-green-700">🟢 {data}</span>:<span className="text-gray-400">pendent</span>}</td></tr>;})}</tbody></table>}
+  </div>;
 })()}</td><td className="px-2 py-2"><textarea rows={4} className="text-xs border rounded px-1 py-0.5 w-full resize-y" style={{minHeight:"60px",maxHeight:"200px"}} value={l.comentaris||""} placeholder="Comentaris" onBlur={e=>{if(e.target.value!==(l.comentaris||"")){const updated={...l,comentaris:e.target.value};save(lic.map(x=>x.id===l.id?updated:x));saveOne(updated);}}} onChange={e=>{save(lic.map(x=>x.id===l.id?{...l,comentaris:e.target.value}:x));}}/></td><td className="px-2 py-2"><div className="flex items-center gap-1">{l.link_obra&&<a href={l.link_obra} target="_blank" rel="noreferrer" className="text-blue-500 hover:text-blue-700" title={l.link_obra}>🔗</a>}<input className="text-xs border rounded px-1 py-0.5 w-full" value={l.link_obra||""} placeholder="URL carpeta" onBlur={e=>{if(e.target.value!==(l.link_obra||"")){const updated={...l,link_obra:e.target.value};save(lic.map(x=>x.id===l.id?updated:x));saveOne(updated);}}} onChange={e=>{save(lic.map(x=>x.id===l.id?{...l,link_obra:e.target.value}:x));}}/></div></td><td className="px-2 py-2"><div className="flex items-center gap-1">{l.link_publicacio&&<a href={l.link_publicacio} target="_blank" rel="noreferrer" className="text-green-500 hover:text-green-700" title={l.link_publicacio}>🌐</a>}<input className="text-xs border rounded px-1 py-0.5 w-full" value={l.link_publicacio||""} placeholder="URL publicació" onBlur={e=>{if(e.target.value!==(l.link_publicacio||"")){const updated={...l,link_publicacio:e.target.value};save(lic.map(x=>x.id===l.id?updated:x));saveOne(updated);}}} onChange={e=>{save(lic.map(x=>x.id===l.id?{...l,link_publicacio:e.target.value}:x));}}/></div></td><td className="px-2 py-2 whitespace-nowrap">{parseDT(l.data_presentacio)&&<button onClick={()=>addToCalendar(l,setCalSt)} title="Google Calendar" className="text-blue-400 hover:text-blue-600 mr-1">📅</button>}<button onClick={()=>onEdit(l)} className="text-blue-500 hover:text-blue-700 mr-1">✏️</button><button onClick={()=>onDel(l.id)} className="text-red-400 hover:text-red-600">🗑️</button></td></tr>))}</tbody></table></div>}
       <div className="mt-2 text-xs text-gray-400 text-right">{filtered.length} de {lic.length} licitacions — Sincronitzat amb Supabase</div>
     </div>
