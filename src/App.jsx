@@ -1550,28 +1550,49 @@ INSTRUCCIONS D'EXTRACCIÓ — segueix aquest esquema:
    → Omple al JSON: "solvencia_obligatoria": true/false, "solvencia_economica" i "solvencia_tecnica" amb transcripció
 
    PREGUNTA 3: ¿El PCAP permet SUBSTITUIR solvència per classificació (o viceversa)?
-   → BUSCA literalment al PCAP frases com:
-     - "podrà acreditar-se alternativament mitjançant classificació"
-     - "s'admetrà la classificació en grup..."
-     - "equivalent a la classificació en..."
-     - "es podrà substituir per la classificació"
-     - "alternativament, mitjançant la classificació"
-     - "en lloc d'aquesta solvència, l'empresa podrà acreditar..."
-     - "no serà necessari acreditar la solvència si l'empresa disposa de classificació..."
-   → Si el PCAP ho permet → "Sí, el PCAP permet substitució. Text literal: [transcriu]"
-   → Si el PCAP NO ho permet → "No, el PCAP no preveu substitució. La solvència és obligatòria."
-   → Si no apareix res al PCAP sobre el tema → "El PCAP no menciona la possibilitat de substitució"
-   → Omple al JSON: "permet_substitucio_per_classificacio": true/false/null
+   ⚠️ AQUESTA PREGUNTA NOMÉS TÉ SENTIT SI EL PCAP EXIGEIX SOLVÈNCIA REAL (≠ "NO ESCAU").
+   Si la classificació és l'única exigència i la solvència no aplica perquè la
+   substitueix per llei, llavors NO hi ha res a substituir → posa null.
+
+   ARBRE DE DECISIÓ ESTRICTE:
+     a) Classificació obligatòria + solvència = "NO ESCAU"/no exigida:
+        → "permet_substitucio_per_classificacio": null
+        → "subcas_explicacio": "Classificació obligatòria; la solvència no aplica (queda coberta per la classificació segons LCSP arts. 77-85)."
+
+     b) Classificació + solvència ADDICIONAL exigides simultàniament:
+        → Mira si el PCAP permet acreditar la solvència addicional via classificació equivalent.
+        → true/false/null segons text PCAP.
+
+     c) Sense classificació obligatòria, només solvència:
+        BUSCA al PCAP frases com:
+          - "podrà acreditar-se alternativament mitjançant classificació"
+          - "s'admetrà la classificació en grup..."
+          - "equivalent a la classificació en..."
+          - "es podrà substituir per la classificació"
+          - "alternativament, mitjançant la classificació"
+        → true si ho permet, false si ho prohibeix expressament, null si no en parla.
+
+     d) Cas especial: "s'ha suprimit la possibilitat de substitució"
+        → Vol dir que la classificació passa a ser EXCLOENT (no admet solvència alternativa).
+        → Si la classificació és obligatòria, situació = (a) → null amb explicació.
+
+   COHERÈNCIA OBLIGATÒRIA (validació interna abans d'emetre el JSON):
+     • Si "exigeix_classificacio"=true I "solvencia_economica"="NO ESCAU" (o equivalent):
+       "permet_substitucio_per_classificacio" HA DE SER null. Mai false.
+     • Si "permet_substitucio_per_classificacio"=false: ha d'haver-hi solvència real
+       transcrita a "solvencia_economica"/"solvencia_tecnica" (no "NO ESCAU").
 
    CAMPS OBLIGATORIS AL JSON:
    → "exigeix_classificacio": true/false segons PCAP
    → "classificacio_requerida": [...] grup/subgrup/categoria segons PCAP
    → "solvencia_obligatoria": true/false segons PCAP
-   → "solvencia_economica": transcripció literal de què demana el PCAP (imports, mitjans)
-   → "solvencia_tecnica": transcripció literal de què demana el PCAP (obres similars, personal, etc.)
-   → "permet_substitucio_per_classificacio": true/false/null segons PCAP
+   → "solvencia_economica": transcripció literal de què demana el PCAP (imports, mitjans).
+       Si la classificació la cobreix → exactament la cadena "NO ESCAU".
+   → "solvencia_tecnica": transcripció literal (obres similars, personal, etc.).
+       Si la classificació la cobreix → exactament la cadena "NO ESCAU".
+   → "permet_substitucio_per_classificacio": true/false/null seguint l'arbre anterior
    → "text_substitucio_pcap": transcripció LITERAL del fragment del PCAP sobre substitució (si n'hi ha)
-   → "subcas_explicacio": resum en 1-2 frases del que diu el PCAP
+   → "subcas_explicacio": resum en 1-2 frases del que diu el PCAP, ALINEAT amb els camps anteriors
 
    IMPORTANT:
    • NO citis la llei (LCSP, arts. 77, 86, 87, 88...) com a resposta. Cita només el PCAP.
@@ -2324,20 +2345,30 @@ ${informeText?`<div class="informe"><h2>📝 Informe complet de l'anàlisi</h2>$
                     <strong>📋 Sense classificació obligatòria per llei</strong> (valor &lt; 500.000€) — S'acredita mitjançant solvència (arts. 87-88 LCSP)
                   </div>
                 </>)}
-                {/* Bloc de substitució PCAP - mostrar SEMPRE quan hi ha solvència o quan hi ha classificació exigida */}
-                {(r.solvencia_economica||r.solvencia_tecnica||r.exigeix_classificacio)&&<>
-                  {r.permet_substitucio_per_classificacio===true&&<div className="bg-green-50 border border-green-300 rounded-lg px-3 py-2 mb-2 text-xs text-green-800">
-                    <strong>✅ El PCAP permet SUBSTITUIR la solvència per classificació</strong>
-                    {r.text_substitucio_pcap&&<div className="mt-1 pt-1 border-t border-green-200 italic text-green-700">Text del PCAP: "{r.text_substitucio_pcap}"</div>}
-                  </div>}
-                  {r.permet_substitucio_per_classificacio===false&&<div className="bg-red-50 border border-red-300 rounded-lg px-3 py-2 mb-2 text-xs text-red-800">
-                    <strong>❌ El PCAP NO permet la substitució de la solvència per classificació</strong> — La solvència és requisit obligatori i ha de ser acreditada encara que es tingui classificació.
-                  </div>}
-                  {(r.permet_substitucio_per_classificacio===null||r.permet_substitucio_per_classificacio===undefined)&&<div className="bg-amber-50 border border-amber-300 rounded-lg px-3 py-2 mb-2 text-xs text-amber-800">
-                    <strong>⚠️ El PCAP no és clar sobre la substitució</strong> — Revisar manualment el document.
-                  </div>}
-                  {r.subcas_explicacio&&<div className="text-xs text-gray-600 italic mb-2 px-1 bg-gray-50 rounded p-2 border border-gray-200">📄 Segons el PCAP: {r.subcas_explicacio}</div>}
-                </>}
+                {/* Bloc de substitució PCAP — només té sentit quan HI HA solvència real exigida.
+                    Si la solvència és NO ESCAU/buida, la classificació ja la cobreix tota i el debat
+                    de "substitució" no aplica. */}
+                {(()=>{
+                  const isNoEscau=v=>!v||/^(no\s*escau|no\s*aplica|n\/a|—|---?)\s*$/i.test(String(v).trim());
+                  const teSolvenciaReal=!isNoEscau(r.solvencia_economica)||!isNoEscau(r.solvencia_tecnica);
+                  // Cas A: classificació obligatòria + sense solvència real → no cal mostrar substitució
+                  if(r.exigeix_classificacio&&!teSolvenciaReal)return r.subcas_explicacio?<div className="text-xs text-gray-600 italic mb-2 px-1 bg-gray-50 rounded p-2 border border-gray-200">📄 Segons el PCAP: {r.subcas_explicacio}</div>:null;
+                  // Cas B: hi ha solvència real → mostrar el bloc de substitució
+                  if(!teSolvenciaReal)return null;
+                  return<>
+                    {r.permet_substitucio_per_classificacio===true&&<div className="bg-green-50 border border-green-300 rounded-lg px-3 py-2 mb-2 text-xs text-green-800">
+                      <strong>✅ El PCAP permet SUBSTITUIR la solvència per classificació</strong>
+                      {r.text_substitucio_pcap&&<div className="mt-1 pt-1 border-t border-green-200 italic text-green-700">Text del PCAP: "{r.text_substitucio_pcap}"</div>}
+                    </div>}
+                    {r.permet_substitucio_per_classificacio===false&&<div className="bg-red-50 border border-red-300 rounded-lg px-3 py-2 mb-2 text-xs text-red-800">
+                      <strong>❌ El PCAP NO permet la substitució de la solvència per classificació</strong> — La solvència és requisit obligatori i ha de ser acreditada encara que es tingui classificació.
+                    </div>}
+                    {(r.permet_substitucio_per_classificacio===null||r.permet_substitucio_per_classificacio===undefined)&&<div className="bg-amber-50 border border-amber-300 rounded-lg px-3 py-2 mb-2 text-xs text-amber-800">
+                      <strong>⚠️ El PCAP no és clar sobre la substitució</strong> — Revisar manualment el document.
+                    </div>}
+                    {r.subcas_explicacio&&<div className="text-xs text-gray-600 italic mb-2 px-1 bg-gray-50 rounded p-2 border border-gray-200">📄 Segons el PCAP: {r.subcas_explicacio}</div>}
+                  </>;
+                })()}
                 <div className="space-y-1 text-xs">{r.solvencia_economica&&<div className="flex gap-2"><span className="text-gray-400 shrink-0 w-36">Solvència econòmica:</span><span className="font-medium text-gray-800">{r.solvencia_economica}</span></div>}{r.solvencia_tecnica&&<div className="flex gap-2"><span className="text-gray-400 shrink-0 w-36">Solvència tècnica:</span><span className="font-medium text-gray-800">{r.solvencia_tecnica}</span></div>}</div>
               </div>
               {((r.criteris_automatics?.length>0)||(r.criteris_judici_valor?.length>0))&&(()=>{
