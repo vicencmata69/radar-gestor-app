@@ -771,6 +771,38 @@ function GestorTab({refreshKey=0}){
     return()=>{supabase.removeChannel(channel);};
   },[]);
 
+  // Comprovació d'integritat: avisa si el shadow local té dates que Supabase ha perdut.
+  // No restaura automàticament — només notifica per evitar sobreescriptures inesperades.
+  useEffect(()=>{
+    if(!loaded)return;
+    try{
+      const shadowRaw=localStorage.getItem(SK);
+      if(!shadowRaw)return;
+      const shadow=JSON.parse(shadowRaw);
+      if(!Array.isArray(shadow))return;
+      const fullDate=/^\d{1,2}[\/\-]\d{1,2}[\/\-]\d{4}(\s+.+)?$/;
+      const lostDates=[];
+      shadow.forEach(s=>{
+        if(!s.id||!s.data_presentacio||!fullDate.test(String(s.data_presentacio).trim()))return;
+        const cur=lic.find(l=>l.id===s.id);
+        if(!cur)return;
+        const curDate=String(cur.data_presentacio||"").trim();
+        if(!curDate||curDate!==String(s.data_presentacio).trim()){
+          lostDates.push({id:s.id,codi:s.codi_obra,lic:(s.licitacio||"").slice(0,50),shadow:s.data_presentacio,supabase:cur.data_presentacio||"(buit)"});
+        }
+      });
+      if(lostDates.length>0){
+        console.warn("[gestor] ⚠️ Possibles dates perdudes — diferències shadow vs Supabase:",lostDates);
+        // Mostra un avís a la UI (només la primera vegada per sessió)
+        if(!window.__servialDateWarningShown){
+          window.__servialDateWarningShown=true;
+          setBackupMsg(`⚠️ Detectades ${lostDates.length} possible(s) data(es) perduda(es). Mira la consola del navegador (F12) per al detall.`);
+          setTimeout(()=>setBackupMsg(""),10000);
+        }
+      }
+    }catch(e){}
+  },[loaded,lic]);
+
   useEffect(()=>{
     if(!loaded)return;
     if(!isSupabaseConfigured())return;
@@ -797,8 +829,37 @@ function GestorTab({refreshKey=0}){
     })();
   },[]);
 
-  const save=async list=>{setLic(list);if(!isSupabaseConfigured())try{localStorage.setItem(SK,JSON.stringify(list));}catch(e){}};
-  const cleanForDB=item=>{const c={...item};if(c.import_pec_sense_iva===""||c.import_pec_sense_iva==null)c.import_pec_sense_iva=0;else c.import_pec_sense_iva=Number(c.import_pec_sense_iva)||0;if(!sobresEnabled)delete c.sobres;return c;};
+  // Validació centralitzada per data_presentacio: l'única forma vàlida és:
+  //   - Buit (l'usuari vol esborrar)
+  //   - DD/MM/YYYY o DD/MM/YYYY HH:MM (data completa)
+  //   - Text amb lletres ("pendent rebre projecte", etc.)
+  // Qualsevol altra forma (dates parcials tipus "25/" o "25/05/2") es rebutja.
+  const isDataPresentacioSafe=v=>{
+    const s=String(v||"").trim();
+    if(!s)return true;
+    if(/^\d{1,2}[\/\-]\d{1,2}[\/\-]\d{4}(\s+.+)?$/.test(s))return true;
+    if(/[a-zA-ZàèéíòóúÀÈÉÍÒÓÚçÇñÑ]/.test(s))return true;
+    return false;
+  };
+  // SAVE: estat React + shadow a localStorage SEMPRE (no només quan Supabase no està configurat).
+  // El shadow serveix com a backup local per recuperar dades en cas de pèrdua remota.
+  const save=async list=>{
+    setLic(list);
+    try{localStorage.setItem(SK,JSON.stringify(list));localStorage.setItem(SK+"-ts",new Date().toISOString());}catch(e){}
+  };
+  // cleanForDB: defensa de servidor — rebutja partials abans d'enviar-los a Supabase.
+  // Si data_presentacio és parcial, l'eliminem del payload (preservem el valor existent a la BD).
+  const cleanForDB=item=>{
+    const c={...item};
+    if(c.import_pec_sense_iva===""||c.import_pec_sense_iva==null)c.import_pec_sense_iva=0;
+    else c.import_pec_sense_iva=Number(c.import_pec_sense_iva)||0;
+    if(!sobresEnabled)delete c.sobres;
+    if("data_presentacio" in c && !isDataPresentacioSafe(c.data_presentacio)){
+      console.warn("[gestor] data_presentacio parcial bloquejada al saveOne:",c.data_presentacio);
+      delete c.data_presentacio; // no sobreescriu el valor existent a Supabase
+    }
+    return c;
+  };
   const saveOne=async item=>{if(!isSupabaseConfigured())return;try{await supabase.from("licitacions").upsert(cleanForDB(item));}catch(e){console.error("Save error:",e);}};
   const logCanviEstat=async(licitacioId,estatAnterior,estatNou,codiObra)=>{try{await supabase.from("licitacions_log").insert({licitacio_id:licitacioId,estat_anterior:estatAnterior||"",estat_nou:estatNou,codi_obra:codiObra||""});}catch(e){console.error("Log error:",e);}};
   const saveAll=async list=>{if(!isSupabaseConfigured())return;try{await supabase.from("licitacions").upsert(list.map(cleanForDB));}catch(e){console.error("SaveAll error:",e);}};
