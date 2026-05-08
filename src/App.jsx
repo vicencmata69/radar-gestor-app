@@ -995,12 +995,12 @@ export default function App(){
     finally{setLegalLoading(false);}
   };
   useEffect(()=>{
-    supabase.from("plec_historial").select("*").order("created_at",{ascending:false}).limit(20)
+    supabase.from("plec_historial").select("*").order("created_at",{ascending:false}).limit(25)
       .then(({data,error})=>{if(!error&&data)setPlecHistorial(data.map(d=>({id:d.id,nom:d.nom,date:d.date,results:d.results,rawText:d.raw_text})));});
     // Migrar localStorage a Supabase si hi ha dades locals
-    try{const h=localStorage.getItem("servial-plec-historial");if(h){const local=JSON.parse(h);if(local.length>0){Promise.all(local.map(e=>supabase.from("plec_historial").upsert({id:e.id,nom:e.nom,date:e.date,results:e.results,raw_text:e.rawText},{onConflict:"id"}))).then(()=>{localStorage.removeItem("servial-plec-historial");supabase.from("plec_historial").select("*").order("created_at",{ascending:false}).limit(20).then(({data})=>{if(data)setPlecHistorial(data.map(d=>({id:d.id,nom:d.nom,date:d.date,results:d.results,rawText:d.raw_text})));});});}}}catch(e){}
+    try{const h=localStorage.getItem("servial-plec-historial");if(h){const local=JSON.parse(h);if(local.length>0){Promise.all(local.map(e=>supabase.from("plec_historial").upsert({id:e.id,nom:e.nom,date:e.date,results:e.results,raw_text:e.rawText},{onConflict:"id"}))).then(()=>{localStorage.removeItem("servial-plec-historial");supabase.from("plec_historial").select("*").order("created_at",{ascending:false}).limit(25).then(({data})=>{if(data)setPlecHistorial(data.map(d=>({id:d.id,nom:d.nom,date:d.date,results:d.results,rawText:d.raw_text})));});});}}}catch(e){}
   },[]);
-  const guardarPlecHistorial=async(nom,results,rawText)=>{const r=results?.[0]||{};const label=[r.objecte,r.organisme,nom].filter(Boolean).join(" — ")||"Sense nom";const entry={id:Date.now(),nom:label,date:new Date().toLocaleDateString("ca-ES"),results,raw_text:rawText};await supabase.from("plec_historial").upsert(entry,{onConflict:"id"});const{data}=await supabase.from("plec_historial").select("*").order("created_at",{ascending:false}).limit(20);if(data)setPlecHistorial(data.map(d=>({id:d.id,nom:d.nom,date:d.date,results:d.results,rawText:d.raw_text})));};
+  const guardarPlecHistorial=async(nom,results,rawText)=>{const r=results?.[0]||{};const label=[r.objecte,r.organisme,nom].filter(Boolean).join(" — ")||"Sense nom";const entry={id:Date.now(),nom:label,date:new Date().toLocaleDateString("ca-ES"),results,raw_text:rawText};await supabase.from("plec_historial").upsert(entry,{onConflict:"id"});const{data}=await supabase.from("plec_historial").select("*").order("created_at",{ascending:false}).limit(25);if(data)setPlecHistorial(data.map(d=>({id:d.id,nom:d.nom,date:d.date,results:d.results,rawText:d.raw_text})));};
   const eliminarPlecHistorial=async(id)=>{await supabase.from("plec_historial").delete().eq("id",id);setPlecHistorial(prev=>prev.filter(h=>h.id!==id));};
   const [showCidoImport,setShowCidoImport]=useState(false);
   const [cidoHtml,setCidoHtml]=useState("");
