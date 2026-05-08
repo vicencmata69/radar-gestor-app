@@ -1061,6 +1061,8 @@ function GestorTab({refreshKey=0}){
 
 export default function App(){
   const [activeTab,setActiveTab]=useState("filtres");
+  // En canviar de pestanya, anar sempre al capdamunt (UX natural).
+  useEffect(()=>{window.scrollTo({top:0,behavior:"auto"});},[activeTab]);
   const [filters,setFilters]=useState(EMPTY_FILTERS);
   const [results,setResults]=useState([]);
   const [loading,setLoading]=useState(false);
