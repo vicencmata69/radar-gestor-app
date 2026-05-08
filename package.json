@@ -5,7 +5,8 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "vite build"
+    "build": "vite build",
+    "backup": "node scripts/backup.js"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.100.0",
