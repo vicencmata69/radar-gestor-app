@@ -470,13 +470,56 @@ function Badge({score}){const cls=score>=8?"bg-green-100 text-green-800":score>=
 function CompatBadge({pot}){if(pot===null)return<span className="text-xs bg-green-50 text-green-700 font-semibold px-2 py-0.5 rounded-full">✅ Sense classif. requerida</span>;if(pot)return<span className="text-xs bg-blue-100 text-blue-700 font-semibold px-2 py-0.5 rounded-full">🔍 Probable compliment</span>;return<span className="text-xs bg-slate-100 text-slate-600 font-semibold px-2 py-0.5 rounded-full">⚠️ Probable classif. insuficient</span>;}
 function CompatDetail({items}){if(!items.length)return null;return<div className="mt-2 space-y-1">{items.map((it,i)=>(<div key={i} className={`flex items-center gap-2 text-xs px-2 py-1 rounded-lg ${it.status==="ok"?"bg-green-50 text-green-800":it.status==="inferior"?"bg-amber-50 text-amber-800":"bg-red-50 text-red-700"}`}><span className="font-bold w-8 shrink-0">{it.codi}</span><span className="flex-1">{it.denominacio}</span><span className="shrink-0">{it.status==="ok"&&`✅ Cat.${it.catServial} (req.${it.catReq})`}{it.status==="inferior"&&`⚠️ Cat.${it.catServial}→Cat.${it.catReq}`}{it.status==="absent"&&`❌ No acreditat`}</span></div>))}</div>;}
 
-// Camp inline amb estat local: l'usuari escriu sense que el realtime echo
-// del Supabase regressi el valor visualitzat. Cada caràcter es propaga via
-// onSave (que actualitza lic + Supabase), però el camp manté el seu propi
-// estat per garantir que l'usuari vegi sempre el que ha escrit.
+// Camp inline amb estat local i múltiples camins de commit:
+//   - Es manté un estat local independent que l'usuari pot teclejar lliurement.
+//   - El save NO es dispara per cada caràcter (evita que el realtime echo
+//     regressi parcialment el valor visualitzat i deixi dades parcials a la BD).
+//   - El save es dispara SEMPRE en blur (clic fora), Enter i a través d'un
+//     debounce de 1500ms per si l'usuari deixa el cursor i tanca pestanya.
+//   - Sols es desa si el valor és diferent de l'inicial (evita escriptures
+//     espúries) i si "sembla complet" o és buit/text-lliure (no es desa
+//     "25/" o "25/05/2" mig escrits).
 function InlineDateText({initial,onSave}){
   const [val,setVal]=useState(initial||"");
-  return <input className="text-xs border rounded px-1 py-0.5 w-full" value={val} placeholder="Text lliure DD/MM/YYYY HH:MM" onChange={e=>{const v=e.target.value;setVal(v);onSave(v);}} />;
+  const debounceRef=useRef(null);
+  const valRef=useRef(val);
+  const initialRef=useRef(initial||"");
+  useEffect(()=>{initialRef.current=initial||"";},[initial]);
+  useEffect(()=>{valRef.current=val;},[val]);
+  // Considerem el valor "segur per desar" si:
+  //   - Està buit (l'usuari el vol esborrar), o
+  //   - És una data completa DD/MM/YYYY (amb hora opcional), o
+  //   - Conté lletres (és text lliure tipus "pendent rebre projecte"), és a dir
+  //     no és una seqüència de dígits/barres incompleta.
+  const isSafe=v=>{
+    const s=String(v||"").trim();
+    if(!s)return true;
+    if(/^\d{1,2}[\/\-]\d{1,2}[\/\-]\d{4}(\s+\d{1,2}[:.]?\d{0,2})?$/.test(s))return true;
+    if(/[a-zA-ZàèéíòóúÀÈÉÍÒÓÚçÇñÑ]/.test(s))return true;
+    return false; // és una data parcial tipus "25/" o "25/05/2"
+  };
+  const commit=()=>{
+    if(debounceRef.current){clearTimeout(debounceRef.current);debounceRef.current=null;}
+    const v=valRef.current;
+    if(v===initialRef.current)return;
+    if(!isSafe(v))return; // no desar dates parcials
+    onSave(v);
+  };
+  useEffect(()=>()=>{if(debounceRef.current)clearTimeout(debounceRef.current);},[]);
+  return <input
+    className="text-xs border rounded px-1 py-0.5 w-full"
+    value={val}
+    placeholder="Text lliure DD/MM/YYYY HH:MM"
+    onChange={e=>{
+      const v=e.target.value;
+      setVal(v);
+      if(debounceRef.current)clearTimeout(debounceRef.current);
+      // Auto-save després de 1.5s d'inactivitat (xarxa de seguretat per si l'usuari tanca pestanya)
+      debounceRef.current=setTimeout(()=>{commit();},1500);
+    }}
+    onBlur={commit}
+    onKeyDown={e=>{if(e.key==="Enter"){e.currentTarget.blur();}}}
+  />;
 }
 
 function GestorTab({refreshKey=0}){
