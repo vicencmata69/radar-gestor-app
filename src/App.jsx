@@ -1128,7 +1128,12 @@ export default function App(){
     // 1. "Plataforma de Serveis de Contractació Pública" → TOT és Catalunya → incloure tot
     // 2. "Publicacions de la plataforma de l'Estat" → Tot Espanya → filtrar per geografia catalana
     const isMeta=l=>/^(Data de publicació|Esmenat en data|Termini de presentació|Pressupost de licitació)/.test(l);
-    const isOrgLine=l=>/^(Ajuntament|Universitat|Institut|Departament|Consell|Diputaci|Ferrocarril|Agència|ADIF|Aena|Consejería|Junta|Presidencia|Gobierno|Alcald|Pleno|Secretaria|Servicio|Subdirección|Dirección|Comité|Delegación|Empresa|Rectorado|TGSS|VISESA|AYUNTAMIENTO|Comisión|Consejo|Intendente|Axencia|Ayuntamiento|Alcaldía|Órgano|Infraestructur|Consorci|Patronat|Fundació|Generalitat|Societat|Autoritat|Mancomunitat|Entitat|Corporació|Port de |Ports de |Servei Català|INCASÒL|Agència Catalana|GENCAT|Govern|Parlament|Administra|el director|el secretari|la secretària|Ministerio|Gerencia|Subdelegación|Confederación|Demarcació|Gestió d|Organisme|Gestión|Sociedad|Autoridad|Comunidad|Ciudad Autónoma|Cabildo|Concejalía|Concejal|Rector|Parque|AUTOPISTAS|Consellería|Gerencia)/.test(l);
+    // Reconeix organismes:
+    //   - Prefix conegut (Ajuntament, Diputació, ...)
+    //   - Sufix d'empresa (SL, S.L., SLU, SA, S.A., SAU, SCCL, SCL, SCO, SCP, SLU...)
+    //   - Conté "Sociedad" o "Societat" enmig (no només al començament)
+    const hasCompanySuffix=l=>/,\s*S\.?\s*[LACO]\.?(\s*[UA]\.?)?$|,\s*S\.?C\.?C\.?L\.?$|,\s*S\.?C\.?P\.?$/i.test(l);
+    const isOrgLine=l=>/^(Ajuntament|Universitat|Institut|Departament|Consell|Diputaci|Ferrocarril|Agència|ADIF|Aena|Consejería|Junta|Presidencia|Gobierno|Alcald|Pleno|Secretaria|Servicio|Subdirección|Dirección|Comité|Delegación|Empresa|Rectorado|TGSS|VISESA|AYUNTAMIENTO|Comisión|Consejo|Intendente|Axencia|Ayuntamiento|Alcaldía|Órgano|Infraestructur|Consorci|Patronat|Fundació|Generalitat|Societat|Autoritat|Mancomunitat|Entitat|Corporació|Port de |Ports de |Servei Català|INCASÒL|Agència Catalana|GENCAT|Govern|Parlament|Administra|el director|el secretari|la secretària|Ministerio|Gerencia|Subdelegación|Confederación|Demarcació|Gestió d|Organisme|Gestión|Sociedad|Autoridad|Comunidad|Ciudad Autónoma|Cabildo|Concejalía|Concejal|Rector|Parque|AUTOPISTAS|Consellería|Gerencia)/.test(l)||hasCompanySuffix(l);
 
     // Separar seccions
     const secCatRx=/Plataforma de Serveis de Contractació Pública/i;
@@ -1151,16 +1156,20 @@ export default function App(){
         lastOrg=line;
         current={organisme:line,titol:"",import_eur:0,data_presentacio:"",data_publicacio:"",secció};continue;
       }
-      // Si no hi ha current però sí lastOrg, i la línia sembla títol (no meta, llarg) → és una nova licitació del mateix organisme
-      if(!current&&lastOrg&&!isMeta(line)&&line.length>10&&!line.includes("€")&&!/^\d{2}\/\d{2}\/\d{4}/.test(line)){
-        current={organisme:lastOrg,titol:line,import_eur:0,data_presentacio:"",data_publicacio:"",secció};continue;
-      }
-      // Fallback: organisme no reconegut (línia no-meta seguida de títol seguit de meta)
+      // PRIMER: si la línia sembla organisme NO reconegut (línia seguida d'un títol llarg
+      // i després d'una línia meta) → tractar-la com a NOU organisme. Això evita que
+      // organismes no llistats al regex (empreses, SL, SA, etc.) s'interpretin
+      // erròniament com a títol del lastOrg anterior.
       if(!current&&!isMeta(line)&&line.length>5&&!line.includes("€")&&!/\d{2}\/\d{2}\/\d{4}/.test(line)){
         if(i+1<lines.length&&!isMeta(lines[i+1])&&lines[i+1].length>10&&i+2<lines.length&&isMeta(lines[i+2]?.trim())){
           lastOrg=line;
           current={organisme:line,titol:"",import_eur:0,data_presentacio:"",data_publicacio:"",secció};continue;
         }
+      }
+      // SEGON: si no hi ha current però sí lastOrg, i la línia sembla títol (no meta, llarg)
+      // i no apunta a una NOVA licitació amb organisme propi → és una nova licitació del mateix organisme.
+      if(!current&&lastOrg&&!isMeta(line)&&line.length>10&&!line.includes("€")&&!/^\d{2}\/\d{2}\/\d{4}/.test(line)){
+        current={organisme:lastOrg,titol:line,import_eur:0,data_presentacio:"",data_publicacio:"",secció};continue;
       }
       if(current&&!current.titol&&line.length>10&&!isMeta(line)&&!line.includes("€")){current.titol=line;continue;}
       if(/Termini de presentació d'ofertes:\s*(.+)/.test(line)&&current){current.data_presentacio=line.match(/Termini de presentació d'ofertes:\s*(.+)/)[1].replace(/h\s*$/,"").trim();continue;}
