@@ -1195,11 +1195,24 @@ export default function App(){
     const catExtra=["catalunya","cataluña","generalitat","gencat","barcelona","girona","lleida","tarragona","el prat","reus","sabadell","terrassa","mataró","manresa","igualada","vic","granollers","vilanova","vilafranca","figueres","olot","tortosa","valls"];
     for(const ct of catExtra)geoTermsCat.add(ct);
 
+    // Per la secció ESTATAL fem servir un filtre MÉS ESTRICTE: només marcadors
+    // inequívocament catalans. Si fessim servir tots els municipis catalans, hi ha
+    // col·lisions reals (p.ex. "Sallent" — municipi al Bages — apareix també a
+    // "Sallent de Gállego" a Aragó). Aquest llistat curt és gairebé infalible.
+    const STRONG_CAT_MARKERS=new Set([
+      "catalunya","cataluña","generalitat","gencat",
+      "barcelona","girona","lleida","tarragona",
+      "el prat","reus","sabadell","terrassa","mataró","manresa","igualada",
+      "granollers","vilanova","vilafranca","figueres","olot","tortosa","valls",
+      "sant cugat","cerdanyola","badalona","santa coloma","l'hospitalet",
+      "rubí","cornellà","esplugues","gavà","viladecans","castelldefels",
+      "sant boi","el masnou","montgat","premià","vic"
+    ]);
     const filtratGeo=filtratTipus.filter(l=>{
       if(l.secció==="cat")return true; // Secció catalana → tot passa
-      // Secció estatal → només si menciona localitat catalana al títol, organisme o data_presentacio
+      // Secció estatal → només si conté un marcador inequívocament català
       const txt=(l.titol+" "+l.organisme).toLowerCase();
-      return matchGeoTerms(txt,geoTermsCat);
+      return matchGeoTerms(txt,STRONG_CAT_MARKERS);
     });
 
     return filtratGeo.map(l=>({expedient:"",objecte:l.titol,organisme:l.organisme,import_eur:l.import_eur,data_publicacio:l.data_publicacio||new Date().toLocaleDateString("ca-ES"),termini:"",data_presentacio_str:l.data_presentacio,cpv:"45000000",comarca_municipi:l.organisme||"",tipologia:"",font:"Gencat-Email",classificacio_requerida:[],puntuacio:l.secció==="cat"?6:5,justificacio:l.secció==="cat"?"📧 Correu Gencat (Catalunya)":"📧 Correu Gencat (Estatal)",url:""}));
