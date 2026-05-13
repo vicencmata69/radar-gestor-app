@@ -1605,9 +1605,34 @@ export default function App(){
         }
       }
       setPlecStatus(`Analitzant ${docs.length} document${docs.length!==1?"s":""} (${docs.length>rawDocs.length?"dividit automàticament":""}) amb IA…`);
+      const docNames=plecFiles.map((f,i)=>`  ${i+1}. ${f.name}`).join("\n");
       const PROMPT=`Analitza el PCAP/PPT d'aquesta licitació:
 • Expedient: ${plecNom||"(no indicat)"}
 • Òrgan de contractació: ${plecOrgan||"(no indicat)"}
+• Documents adjunts (${plecFiles.length}):
+${docNames}
+
+═══════════════════════════════════════════════════════════════
+🔍 REGLA 0 — VERIFICACIÓ DE COHERÈNCIA (FES-HO ABANS DE RES)
+═══════════════════════════════════════════════════════════════
+Abans d'analitzar res, comprova que TOTS els documents adjunts pertanyen al MATEIX projecte/licitació. Compara:
+• Objecte de l'obra (títol)
+• Òrgan de contractació / promotor
+• Número d'expedient
+• Lloc d'execució
+• Import / pressupost
+
+Si algun document NO té relació amb la resta (p.ex. un projecte diferent, un fitxer personal o no relacionat, un plec d'una altra licitació, etc.):
+1. NO l'incloguis al teu anàlisi — descarta'l completament.
+2. Al PRINCIPI de l'informe, abans de qualsevol altra cosa, posa un avís ben visible amb aquest format EXACTE:
+   ⚠️ **DOCUMENT NO RELACIONAT DETECTAT**
+   - Fitxer: [nom del fitxer]
+   - Motiu: [raó per la qual no encaixa: objecte, organisme o expedient diferent]
+   - Tema/projecte aparent: [descripció breu del que tracta]
+   - Recomanació: revisa els fitxers carregats abans de continuar.
+3. Al JSON final, afegeix els noms dels fitxers descartats al camp "documents_descartats" (array d'strings).
+
+Si tots els documents pertanyen al mateix projecte, no cal cap avís — procedeix amb l'anàlisi normal.
 
 ═══════════════════════════════════════════════════════════════
 MARC LEGAL — LCSP (Llei 9/2017) arts. 74-100 + RD 1098/2001
@@ -2007,7 +2032,7 @@ Al FINAL del text, afegeix el JSON entre aquests marcadors exactes (sense backti
 - Cada objecte JSON del lot ha de tenir el camp "lot" amb el número/nom del lot
 
 --JSON_INICI--
-[{"lot":"","expedient":"","objecte":"","organisme":"","cpv":"","import_sense_iva":0,"import_amb_iva":0,"valor_estimat":0,"termini_execucio":"","termini_presentacio":"DD/MM/YYYY HH:MM","exigeix_classificacio":true,"classificacio_requerida":[{"grup":"C","subgrup":"2","categoria":3}],"classificacio_substitueix_solvencia":true,"solvencia_obligatoria":true,"permet_substitucio_per_classificacio":false,"text_substitucio_pcap":"","subcas_explicacio":"","solvencia_economica":"","solvencia_tecnica":"","criteris_automatics":[{"nom":"Preu","punts":60,"formula":""}],"criteris_judici_valor":[{"nom":"Planificació i seqüència d'execució","punts":15,"subcriteris":[{"codi":"1","nom":"Procediment d'execució","punts":17,"nivell":1,"fills":[{"codi":"1.1","nom":"Implantació i exposició","punts":13,"nivell":2,"fills":[{"codi":"1.1.1","nom":"Implantació","punts":2,"nivell":3,"fills":[]},{"codi":"1.1.2","nom":"Execució","punts":11,"nivell":3,"fills":[]}]},{"codi":"1.2","nom":"Afectacions a l'entorn","punts":4,"nivell":2,"fills":[]}]}],"que_valoren":"Coherència, adequació al projecte, compatibilitat","bandes_puntuacio":[{"rang":"0-2","descripcio":"proposta genèrica o poc adaptada"},{"rang":"3-4","descripcio":"correcta i coherent"},{"rang":"5-6","descripcio":"molt ben estructurada i específica"}],"inconsistencia":""}],"requisits_memoria":{"max_pagines":"","format":"DIN A4","font":"","interlineat":"","annexos":"","penalitzacio_excedir":""},"llindar_minim_tecnic":{"te_llindar":false,"puntuacio_minima":0,"consequencia":""},"total_punts_automatics":60,"total_punts_judici_valor":40,"total_punts":100,"temeritat":{"formula":"","percentatge":"","procediment":"","consequencia":""},"criteris_exclusio":[""],"garantia_definitiva":"5% preu adjudicació s/IVA","garantia_provisional":"","condicions_especials":"","visita_obra":"No","penalitats":"","diagnosic_servial":"","enllac_publicacio":""}]
+[{"lot":"","expedient":"","objecte":"","organisme":"","cpv":"","import_sense_iva":0,"import_amb_iva":0,"valor_estimat":0,"termini_execucio":"","termini_presentacio":"DD/MM/YYYY HH:MM","exigeix_classificacio":true,"classificacio_requerida":[{"grup":"C","subgrup":"2","categoria":3}],"classificacio_substitueix_solvencia":true,"solvencia_obligatoria":true,"permet_substitucio_per_classificacio":false,"text_substitucio_pcap":"","subcas_explicacio":"","solvencia_economica":"","solvencia_tecnica":"","criteris_automatics":[{"nom":"Preu","punts":60,"formula":""}],"criteris_judici_valor":[{"nom":"Planificació i seqüència d'execució","punts":15,"subcriteris":[{"codi":"1","nom":"Procediment d'execució","punts":17,"nivell":1,"fills":[{"codi":"1.1","nom":"Implantació i exposició","punts":13,"nivell":2,"fills":[{"codi":"1.1.1","nom":"Implantació","punts":2,"nivell":3,"fills":[]},{"codi":"1.1.2","nom":"Execució","punts":11,"nivell":3,"fills":[]}]},{"codi":"1.2","nom":"Afectacions a l'entorn","punts":4,"nivell":2,"fills":[]}]}],"que_valoren":"Coherència, adequació al projecte, compatibilitat","bandes_puntuacio":[{"rang":"0-2","descripcio":"proposta genèrica o poc adaptada"},{"rang":"3-4","descripcio":"correcta i coherent"},{"rang":"5-6","descripcio":"molt ben estructurada i específica"}],"inconsistencia":""}],"requisits_memoria":{"max_pagines":"","format":"DIN A4","font":"","interlineat":"","annexos":"","penalitzacio_excedir":""},"llindar_minim_tecnic":{"te_llindar":false,"puntuacio_minima":0,"consequencia":""},"total_punts_automatics":60,"total_punts_judici_valor":40,"total_punts":100,"temeritat":{"formula":"","percentatge":"","procediment":"","consequencia":""},"criteris_exclusio":[""],"garantia_definitiva":"5% preu adjudicació s/IVA","garantia_provisional":"","condicions_especials":"","visita_obra":"No","penalitats":"","diagnosic_servial":"","enllac_publicacio":"","documents_descartats":[]}]
 --JSON_FI--`;
       const SYSTEM_PLEC=`Ets un expert en contractació pública espanyola (LCSP Llei 9/2017, RD 1098/2001). Regles clau:
 1. CLASSIFICACIÓ SUBSTITUEIX SOLVÈNCIA (arts. 77-85): no són acumulables. En obres ≥500k€ la classificació és obligatòria.
@@ -2029,7 +2054,7 @@ Al FINAL del text, afegeix el JSON entre aquests marcadors exactes (sense backti
           setPlecStatus(`Analitzant part ${i+1}/${docs.length} (${docs[i].name}) amb ${aiProvider==="claude"?"Claude":"Gemini"}…`);
           if(i<docs.length-1){
             // Parts intermèdies: extreure TOTES les dades rellevants, especialment TRANSCRIURE literalment els criteris i puntuacions
-            const extractPrompt=`Aquesta és la part ${i+1}/${docs.length} del plec. EXTREU tota la informació rellevant que trobis.
+            const extractPrompt=`Aquesta és la part ${i+1}/${docs.length} del plec (fitxer: ${docs[i].name}). EXTREU tota la informació rellevant que trobis. Indica explícitament l'objecte de l'obra, el promotor i el número d'expedient que detectis a aquest document, per facilitar després la verificació de coherència entre parts.
 
 ⚠️ REGLA CRÍTICA: Si trobes la secció de CRITERIS D'ADJUDICACIÓ (criteris automàtics o criteris de judici de valor), TRANSCRIU LITERALMENT i COMPLETA l'arborescència amb tots els nivells i subnivells, codis i puntuacions exactes, sense resumir ni agrupar. Exemple del nivell de detall que vull:
   1. Procediment d'execució (fins a 17 punts)
@@ -2465,6 +2490,7 @@ ${informeText?`<div class="informe"><h2>📝 Informe complet de l'anàlisi</h2>$
               </div>
             </div>
             {plecView==="taula"&&plecResults.map((r,idx)=>(<div key={idx} className="space-y-3">
+              {Array.isArray(r.documents_descartats)&&r.documents_descartats.length>0&&<div className="bg-amber-50 border-2 border-amber-400 rounded-xl px-4 py-3 flex items-start gap-3"><span className="text-2xl">⚠️</span><div className="flex-1"><div className="font-bold text-amber-900 text-sm mb-1">Document(s) no relacionat(s) detectats — descartat(s) de l'anàlisi</div><ul className="text-xs text-amber-800 list-disc ml-5 space-y-0.5">{r.documents_descartats.map((d,i)=>(<li key={i}><span className="font-mono">{typeof d==="string"?d:JSON.stringify(d)}</span></li>))}</ul><div className="text-xs text-amber-700 mt-2">Revisa els fitxers que has pujat i torna a llançar l'anàlisi si cal.</div></div></div>}
               {r.lot&&<div className="bg-indigo-600 text-white rounded-xl px-4 py-2.5 font-bold text-sm flex items-center gap-2"><span className="bg-white/20 rounded-full px-2.5 py-0.5 text-xs">LOT {idx+1}</span>{r.lot}{r.objecte&&r.lot!==r.objecte&&<span className="font-normal opacity-80">— {r.objecte}</span>}</div>}
               <div className="bg-stone-50 rounded-xl border shadow-sm p-4"><h3 className="font-semibold text-gray-700 mb-3">📋 Dades bàsiques</h3>{r.termini_presentacio&&<div className="bg-red-50 border border-red-200 rounded-lg px-3 py-2 mb-3 flex items-center gap-2"><span className="text-red-600 text-lg">⏰</span><span className="text-sm font-bold text-red-800">Data presentació oferta: {r.termini_presentacio}</span></div>}<div className="grid grid-cols-2 gap-x-6 gap-y-2 text-xs">{[["Expedient",r.expedient],["Objecte",r.objecte],["Organisme",r.organisme],["CPV",r.cpv],["Import s/IVA",r.import_sense_iva?`${Number(r.import_sense_iva).toLocaleString("ca-ES")} €`:""],["Import c/IVA",r.import_amb_iva?`${Number(r.import_amb_iva).toLocaleString("ca-ES")} €`:""],["Valor estimat",r.valor_estimat?`${Number(r.valor_estimat).toLocaleString("ca-ES")} €`:""],["Termini execució",r.termini_execucio]].filter(([,v])=>v).map(([k,v])=>(<div key={k} className="flex gap-2"><span className="text-gray-400 shrink-0 w-36">{k}:</span><span className="font-medium text-gray-800">{v}</span></div>))}</div>
                 <div className="mt-3 flex items-center gap-2 text-xs"><span className="text-gray-400 shrink-0 w-36">🌐 Enllaç publicació:</span>{r.enllac_publicacio?<a href={r.enllac_publicacio} target="_blank" rel="noreferrer" className="text-blue-600 hover:underline truncate">{r.enllac_publicacio}</a>:<span className="text-gray-300">No detectat al PDF</span>}<input className="flex-1 border rounded px-2 py-1 text-xs" placeholder="Enganxa l'URL de la publicació" defaultValue={r.enllac_publicacio||""} onBlur={e=>{const updated=[...plecResults];updated[idx]={...r,enllac_publicacio:e.target.value};setPlecResults(updated);}}/></div>
