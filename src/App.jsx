@@ -1059,6 +1059,314 @@ function GestorTab({refreshKey=0}){
   );
 }
 
+// ============================================================================
+// CALENDARI TAB
+// ============================================================================
+// Vista mensual de tres tipus d'esdeveniments extrets de les licitacions:
+//   🔴 Presentació (data_presentacio del gestor)
+//   🟠 Visita d'obra obligatòria  · 🔵 Visita d'obra facultativa (extreta de comentaris)
+//   🟢 Obertura de sobres (sobres.obert.{unic|1A|2B|3C})
+// Permet: filtrar per estat, toggle de tipus, exportar a Outlook 365 (deep-link)
+// per esdeveniment individual, o descarregar tot el mes com a fitxer .ics.
+function parseFullDate(s){
+  if(!s)return null;
+  const m=String(s).match(/(\d{1,2})\/(\d{1,2})\/(\d{4})(?:\s+(\d{1,2}):(\d{2}))?/);
+  if(!m)return null;
+  return new Date(parseInt(m[3]),parseInt(m[2])-1,parseInt(m[1]),parseInt(m[4]||0),parseInt(m[5]||0));
+}
+function parseVisitaFromComentaris(comentaris){
+  if(!comentaris)return null;
+  // Captura el bloc visita: del marcador fins al següent | o fi
+  const m=comentaris.match(/(?:🏗️|📍)[^|]*VISITA[\s\S]*?(?=\s*\||$)/i);
+  if(!m)return null;
+  const text=m[0];
+  const obligat=/OBLIGAT/i.test(text);
+  const noPrevista=/no prevista/i.test(text);
+  if(noPrevista)return null; // No volem events per "No prevista"
+  const dateMatch=text.match(/📅\s*(\d{1,2}\/\d{1,2}\/\d{4}(?:\s+\d{1,2}:\d{2})?)/);
+  if(!dateMatch)return null; // Sense data publicada no la mostrem al calendari
+  const date=parseFullDate(dateMatch[1]);
+  if(!date)return null;
+  const llocMatch=text.match(/📍\s*([^·|()]+)/);
+  return { obligat, date, lloc: llocMatch ? llocMatch[1].trim() : "" };
+}
+const SOBRE_LABEL = { unic:"Sobre Únic", "1A":"Sobre 1/A", "2B":"Sobre 2/B", "3C":"Sobre 3/C" };
+const EVENT_TYPES = {
+  presentacio:   { color:"bg-red-500",    text:"text-white", emoji:"🔴", label:"Presentació",          durada:30 },
+  visitaObligat: { color:"bg-orange-500", text:"text-white", emoji:"🟠", label:"Visita obligatòria",   durada:60 },
+  visitaFacult:  { color:"bg-blue-500",   text:"text-white", emoji:"🔵", label:"Visita facultativa",   durada:60 },
+  obertura:      { color:"bg-green-600",  text:"text-white", emoji:"🟢", label:"Obertura sobre",       durada:30 }
+};
+function extractCalendarEvents(lic, onlyActive){
+  const ACTIVE = new Set(["EN ESTUDI","PROPOSTA","PRESENTADA","ADJUDICADA"]);
+  const events = [];
+  for (const l of lic) {
+    if (onlyActive && !ACTIVE.has(l.estat)) continue;
+    // 🔴 Presentació
+    const dp = parseFullDate(l.data_presentacio);
+    if (dp) events.push({ date: dp, type: "presentacio", lic: l });
+    // 🟠/🔵 Visita d'obra
+    const v = parseVisitaFromComentaris(l.comentaris);
+    if (v) events.push({ date: v.date, type: v.obligat ? "visitaObligat" : "visitaFacult", lic: l, lloc: v.lloc });
+    // 🟢 Obertures de sobres
+    const sobres = l.sobres || {};
+    const obert = sobres.obert || {};
+    for (const [key, dateStr] of Object.entries(obert)) {
+      const d = parseFullDate(dateStr);
+      if (d) events.push({ date: d, type: "obertura", subType: key, lic: l });
+    }
+  }
+  return events;
+}
+function fmtICSDate(d){
+  const pad = n => String(n).padStart(2, "0");
+  return `${d.getFullYear()}${pad(d.getMonth()+1)}${pad(d.getDate())}T${pad(d.getHours())}${pad(d.getMinutes())}00`;
+}
+function buildEventTitle(ev){
+  const t = EVENT_TYPES[ev.type];
+  const codi = ev.lic.codi_obra || "(sense codi)";
+  const lic = (ev.lic.licitacio || "").slice(0, 80);
+  if (ev.type === "obertura") return `${t.emoji} ${SOBRE_LABEL[ev.subType]||"Sobre"} · ${codi} · ${lic}`;
+  return `${t.emoji} ${t.label} · ${codi} · ${lic}`;
+}
+function buildICS(events){
+  const lines = ["BEGIN:VCALENDAR","VERSION:2.0","PRODID:-//Servial//Radar-Gestor//CA","CALSCALE:GREGORIAN"];
+  for (const ev of events) {
+    const t = EVENT_TYPES[ev.type];
+    const start = ev.date;
+    const end = new Date(start.getTime() + t.durada*60*1000);
+    const uid = `${ev.lic.id}-${ev.type}${ev.subType?"-"+ev.subType:""}-${start.getTime()}@radar-gestor.servial`;
+    const desc = [
+      `Codi: ${ev.lic.codi_obra||"(sense codi)"}`,
+      `Licitacio: ${ev.lic.licitacio||""}`,
+      `Client: ${ev.lic.client||""}`,
+      `Estat: ${ev.lic.estat||""}`,
+      ev.lic.import_pec_sense_iva ? `Import: ${Number(ev.lic.import_pec_sense_iva).toLocaleString("ca-ES")} €` : "",
+      ev.lic.link_obra ? `Organisme: ${ev.lic.link_obra}` : ""
+    ].filter(Boolean).join("\\n");
+    const location = ev.lloc || ev.lic.poblacio || "";
+    lines.push("BEGIN:VEVENT");
+    lines.push(`UID:${uid}`);
+    lines.push(`DTSTAMP:${fmtICSDate(new Date())}`);
+    lines.push(`DTSTART:${fmtICSDate(start)}`);
+    lines.push(`DTEND:${fmtICSDate(end)}`);
+    lines.push(`SUMMARY:${buildEventTitle(ev).replace(/\n/g,"\\n").replace(/,/g,"\\,").replace(/;/g,"\\;")}`);
+    lines.push(`DESCRIPTION:${desc.replace(/,/g,"\\,").replace(/;/g,"\\;")}`);
+    if (location) lines.push(`LOCATION:${location.replace(/,/g,"\\,").replace(/;/g,"\\;")}`);
+    // Recordatoris només per obertures (24h i 48h abans)
+    if (ev.type === "obertura") {
+      for (const h of [24, 48]) {
+        lines.push("BEGIN:VALARM");
+        lines.push("ACTION:DISPLAY");
+        lines.push(`DESCRIPTION:Recordatori — ${h}h abans`);
+        lines.push(`TRIGGER:-PT${h}H`);
+        lines.push("END:VALARM");
+      }
+    }
+    lines.push("END:VEVENT");
+  }
+  lines.push("END:VCALENDAR");
+  return lines.join("\r\n");
+}
+function downloadICS(events, filename){
+  const blob = new Blob([buildICS(events)], { type: "text/calendar;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url; a.download = filename;
+  document.body.appendChild(a); a.click(); document.body.removeChild(a);
+  setTimeout(()=>URL.revokeObjectURL(url), 1000);
+}
+function getOutlookDeepLink(ev){
+  const t = EVENT_TYPES[ev.type];
+  const start = ev.date;
+  const end = new Date(start.getTime() + t.durada*60*1000);
+  const iso = d => `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}T${String(d.getHours()).padStart(2,"0")}:${String(d.getMinutes()).padStart(2,"0")}:00`;
+  const desc = [
+    `Codi: ${ev.lic.codi_obra||"(sense codi)"}`,
+    `Licitacio: ${ev.lic.licitacio||""}`,
+    `Client: ${ev.lic.client||""}`,
+    ev.lic.import_pec_sense_iva ? `Import: ${Number(ev.lic.import_pec_sense_iva).toLocaleString("ca-ES")} €` : "",
+    ev.lic.link_obra ? `\nOrganisme: ${ev.lic.link_obra}` : ""
+  ].filter(Boolean).join("\n");
+  const url = new URL("https://outlook.office.com/calendar/deeplink/compose");
+  url.searchParams.set("subject", buildEventTitle(ev));
+  url.searchParams.set("startdt", iso(start));
+  url.searchParams.set("enddt", iso(end));
+  url.searchParams.set("body", desc);
+  if (ev.lloc) url.searchParams.set("location", ev.lloc);
+  else if (ev.lic.poblacio) url.searchParams.set("location", ev.lic.poblacio);
+  url.searchParams.set("path", "/calendar/action/compose");
+  url.searchParams.set("rru", "addevent");
+  return url.toString();
+}
+const MES_NOMS = ["Gener","Febrer","Març","Abril","Maig","Juny","Juliol","Agost","Setembre","Octubre","Novembre","Desembre"];
+const DIA_NOMS = ["Dl","Dt","Dc","Dj","Dv","Ds","Dg"];
+
+function CalendariTab(){
+  const today = new Date();
+  const [year, setYear] = useState(today.getFullYear());
+  const [month, setMonth] = useState(today.getMonth());
+  const [lic, setLic] = useState([]);
+  const [onlyActive, setOnlyActive] = useState(true);
+  const [visible, setVisible] = useState({ presentacio:true, visitaObligat:true, visitaFacult:true, obertura:true });
+  const [selectedEvent, setSelectedEvent] = useState(null);
+
+  useEffect(() => {
+    if (!isSupabaseConfigured()) {
+      try { const r = localStorage.getItem(SK); if (r) setLic(JSON.parse(r)); } catch(e){}
+      return;
+    }
+    (async () => {
+      try {
+        const { data } = await supabase.from("licitacions").select("*");
+        if (data) setLic(data);
+      } catch(e){}
+    })();
+    const ch = supabase.channel("calendari-licitacions")
+      .on("postgres_changes", { event:"*", schema:"public", table:"licitacions" }, payload => {
+        if (payload.eventType === "INSERT") setLic(prev => [payload.new, ...prev.filter(l => l.id !== payload.new.id)]);
+        else if (payload.eventType === "UPDATE") setLic(prev => prev.map(l => l.id === payload.new.id ? {...l, ...payload.new} : l));
+        else if (payload.eventType === "DELETE") setLic(prev => prev.filter(l => l.id !== payload.old.id));
+      })
+      .subscribe();
+    return () => { supabase.removeChannel(ch); };
+  }, []);
+
+  const allEvents = extractCalendarEvents(lic, onlyActive).filter(e => visible[e.type]);
+  // Esdeveniments del mes actual
+  const monthEvents = allEvents.filter(e => e.date.getFullYear() === year && e.date.getMonth() === month);
+
+  // Construir graella del mes
+  const firstDay = new Date(year, month, 1);
+  const startWeekday = (firstDay.getDay() + 6) % 7; // dilluns=0
+  const lastDay = new Date(year, month+1, 0).getDate();
+  const cells = [];
+  for (let i = 0; i < startWeekday; i++) cells.push(null);
+  for (let d = 1; d <= lastDay; d++) cells.push(d);
+  while (cells.length % 7 !== 0) cells.push(null);
+
+  const eventsByDay = {};
+  for (const e of monthEvents) {
+    const d = e.date.getDate();
+    if (!eventsByDay[d]) eventsByDay[d] = [];
+    eventsByDay[d].push(e);
+  }
+
+  const prev = () => { if (month === 0) { setMonth(11); setYear(year-1); } else setMonth(month-1); };
+  const next = () => { if (month === 11) { setMonth(0); setYear(year+1); } else setMonth(month+1); };
+  const goToday = () => { setYear(today.getFullYear()); setMonth(today.getMonth()); };
+
+  const exportMonth = () => {
+    const fname = `radar-gestor_${year}-${String(month+1).padStart(2,"0")}.ics`;
+    downloadICS(monthEvents, fname);
+  };
+
+  return (
+    <div className="max-w-6xl mx-auto px-4 py-5 space-y-4">
+      <div className="flex items-center justify-between flex-wrap gap-3">
+        <h2 className="text-xl font-bold text-gray-900">📅 Calendari de Licitacions</h2>
+        <div className="flex items-center gap-2">
+          <button onClick={prev} className="px-3 py-1.5 bg-stone-50 hover:bg-stone-100 border rounded-lg text-sm">◀</button>
+          <div className="px-4 py-1.5 bg-blue-600 text-white font-bold rounded-lg text-sm min-w-44 text-center">{MES_NOMS[month]} {year}</div>
+          <button onClick={next} className="px-3 py-1.5 bg-stone-50 hover:bg-stone-100 border rounded-lg text-sm">▶</button>
+          <button onClick={goToday} className="px-3 py-1.5 bg-gray-200 hover:bg-gray-300 border rounded-lg text-sm">Avui</button>
+          <button onClick={exportMonth} className="px-3 py-1.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg text-sm font-semibold" title="Descarrega tot el mes com a fitxer .ics per importar a Outlook">📥 Exportar mes (.ics)</button>
+        </div>
+      </div>
+
+      <div className="bg-stone-50 border rounded-xl p-3 flex flex-wrap items-center gap-3">
+        <span className="text-xs font-semibold text-gray-500 uppercase">Mostra:</span>
+        {Object.entries(EVENT_TYPES).map(([key, t]) => (
+          <label key={key} className="flex items-center gap-1.5 text-xs cursor-pointer">
+            <input type="checkbox" checked={!!visible[key]} onChange={e => setVisible(v => ({...v, [key]: e.target.checked}))} className="accent-blue-600"/>
+            <span>{t.emoji} {t.label}</span>
+          </label>
+        ))}
+        <div className="border-l border-gray-300 h-5 mx-2"></div>
+        <span className="text-xs font-semibold text-gray-500 uppercase">Filtre:</span>
+        <label className="flex items-center gap-1.5 text-xs cursor-pointer">
+          <input type="radio" name="cal-estat" checked={onlyActive} onChange={()=>setOnlyActive(true)} className="accent-blue-600"/>
+          <span>Només actives</span>
+        </label>
+        <label className="flex items-center gap-1.5 text-xs cursor-pointer">
+          <input type="radio" name="cal-estat" checked={!onlyActive} onChange={()=>setOnlyActive(false)} className="accent-blue-600"/>
+          <span>Totes</span>
+        </label>
+      </div>
+
+      <div className="bg-stone-50 border border-gray-200 rounded-xl shadow-sm overflow-hidden">
+        <div className="grid grid-cols-7 bg-gray-100 border-b">
+          {DIA_NOMS.map(d => <div key={d} className="px-2 py-2 text-xs font-bold text-gray-600 text-center">{d}</div>)}
+        </div>
+        <div className="grid grid-cols-7">
+          {cells.map((d, idx) => {
+            const isToday = d && year === today.getFullYear() && month === today.getMonth() && d === today.getDate();
+            const isWeekend = idx % 7 >= 5;
+            return (
+              <div key={idx} className={`border-r border-b border-gray-100 min-h-24 p-1 ${!d ? "bg-gray-50" : isWeekend ? "bg-stone-100/50" : "bg-white"}`}>
+                {d && (
+                  <>
+                    <div className={`text-xs font-semibold mb-1 ${isToday ? "bg-blue-600 text-white rounded-full w-6 h-6 flex items-center justify-center" : "text-gray-600"}`}>{d}</div>
+                    <div className="space-y-0.5">
+                      {(eventsByDay[d] || []).map((ev, i) => {
+                        const t = EVENT_TYPES[ev.type];
+                        const time = ev.date.getHours() ? `${String(ev.date.getHours()).padStart(2,"0")}:${String(ev.date.getMinutes()).padStart(2,"0")} ` : "";
+                        const label = ev.type === "obertura" ? SOBRE_LABEL[ev.subType] : t.label;
+                        return (
+                          <button key={i} onClick={()=>setSelectedEvent(ev)}
+                            className={`block w-full text-left text-[10px] px-1 py-0.5 rounded ${t.color} ${t.text} hover:opacity-80 truncate`}
+                            title={`${time}${ev.lic.codi_obra||""} — ${ev.lic.licitacio||""}`}>
+                            {time}{ev.lic.codi_obra ? ev.lic.codi_obra.slice(-7) : (ev.lic.licitacio||"").slice(0, 14)}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      </div>
+
+      <div className="text-xs text-gray-500 text-right">{monthEvents.length} esdeveniments aquest mes · {allEvents.length} total</div>
+
+      {selectedEvent && (
+        <div className="fixed inset-0 bg-black bg-opacity-40 flex items-center justify-center z-50 p-4" onClick={()=>setSelectedEvent(null)}>
+          <div className="bg-stone-50 rounded-2xl shadow-2xl max-w-lg w-full p-5" onClick={e=>e.stopPropagation()}>
+            {(() => {
+              const ev = selectedEvent;
+              const t = EVENT_TYPES[ev.type];
+              const label = ev.type === "obertura" ? `${SOBRE_LABEL[ev.subType]} obert` : t.label;
+              const dateStr = `${String(ev.date.getDate()).padStart(2,"0")}/${String(ev.date.getMonth()+1).padStart(2,"0")}/${ev.date.getFullYear()}`;
+              const timeStr = (ev.date.getHours() || ev.date.getMinutes()) ? ` · ${String(ev.date.getHours()).padStart(2,"0")}:${String(ev.date.getMinutes()).padStart(2,"0")}` : "";
+              return <>
+                <div className="flex items-center justify-between mb-3">
+                  <span className={`px-3 py-1 rounded-full text-sm font-bold ${t.color} ${t.text}`}>{t.emoji} {label}</span>
+                  <button onClick={()=>setSelectedEvent(null)} className="text-gray-400 hover:text-gray-600 text-2xl">×</button>
+                </div>
+                <div className="text-lg font-bold text-gray-900 mb-1">{dateStr}{timeStr}</div>
+                <div className="space-y-2 text-sm mb-4">
+                  {ev.lic.codi_obra && <div><span className="text-gray-500">Codi:</span> <span className="font-mono font-semibold">{ev.lic.codi_obra}</span></div>}
+                  <div><span className="text-gray-500">Licitació:</span> <span className="font-medium">{ev.lic.licitacio||"---"}</span></div>
+                  {ev.lic.client && <div><span className="text-gray-500">Client:</span> {ev.lic.client}</div>}
+                  {ev.lic.estat && <div><span className="text-gray-500">Estat:</span> <span className={"text-xs font-semibold px-2 py-0.5 rounded-full "+(EC[ev.lic.estat]||"bg-gray-100 text-gray-600")}>{ev.lic.estat}</span></div>}
+                  {ev.lloc && <div><span className="text-gray-500">📍 Lloc:</span> {ev.lloc}</div>}
+                  {ev.lic.import_pec_sense_iva ? <div><span className="text-gray-500">Import:</span> {Number(ev.lic.import_pec_sense_iva).toLocaleString("ca-ES")} €</div> : null}
+                </div>
+                <div className="flex gap-2 flex-wrap">
+                  <a href={getOutlookDeepLink(ev)} target="_blank" rel="noreferrer" className="flex-1 text-center px-4 py-2.5 bg-blue-600 hover:bg-blue-700 text-white font-semibold rounded-xl text-sm">📅 Afegir a Outlook</a>
+                  <button onClick={()=>downloadICS([ev], `${(ev.lic.codi_obra||"event").replace(/[^a-z0-9.-]/gi,"_")}.ics`)} className="px-4 py-2.5 bg-stone-200 hover:bg-stone-300 text-gray-700 font-semibold rounded-xl text-sm">📥 .ics</button>
+                </div>
+              </>;
+            })()}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default function App(){
   const [activeTab,setActiveTab]=useState("filtres");
   // En canviar de pestanya, anar sempre al capdamunt (UX natural).
@@ -2309,13 +2617,14 @@ ${informeText?`<div class="informe"><h2>📝 Informe complet de l'anàlisi</h2>$
       </div>}
       <div className="bg-stone-50 border-b shadow-sm">
         <div className="max-w-6xl mx-auto px-4 flex">
-          {[["filtres","⚙️ Criteris"],["resultats",`📋 Resultats${results.length?` (${results.length})`:""}`],["plecs","📄 Anàlisi Plecs"],["gestio","📁 Gestió"]].map(([id,label])=>(
+          {[["filtres","⚙️ Criteris"],["resultats",`📋 Resultats${results.length?` (${results.length})`:""}`],["plecs","📄 Anàlisi Plecs"],["gestio","📁 Gestió"],["calendari","📅 Calendari"]].map(([id,label])=>(
             <button key={id} onClick={()=>setActiveTab(id)} className={`py-3 px-5 font-medium border-b-2 transition-colors ${activeTab===id?"border-blue-700 text-blue-700":"border-transparent text-gray-500 hover:text-gray-700"}`}>{label}</button>
           ))}
         </div>
       </div>
       {activeTab==="gestio"&&<GestorTab refreshKey={gestorRefreshKey}/>}
-      {activeTab!=="gestio"&&(
+      {activeTab==="calendari"&&<CalendariTab/>}
+      {activeTab!=="gestio"&&activeTab!=="calendari"&&(
       <div className="max-w-6xl mx-auto px-4 py-5 space-y-4">
         {activeTab==="filtres"&&(<>
           <div className="bg-blue-50 border border-blue-200 rounded-xl px-4 py-3 text-xs text-blue-700 flex items-center gap-2"><span>💡</span><span>Cerca licitacions d'obres publicades les últimes 72h amb termini obert. Fonts: Transparència Catalunya + CIDO-DIBA (importació manual).</span></div>
