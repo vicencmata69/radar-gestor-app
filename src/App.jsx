@@ -1312,10 +1312,10 @@ function CalendariTab(){
       </div>
 
       <div className="bg-stone-50 border border-gray-200 rounded-xl shadow-sm overflow-hidden">
-        <div className="grid grid-cols-7 bg-gray-100 border-b">
-          {DIA_NOMS.map(d => <div key={d} className="px-2 py-2 text-xs font-bold text-gray-600 text-center">{d}</div>)}
+        <div className="grid bg-gray-100 border-b" style={{gridTemplateColumns:"repeat(5, minmax(0, 1fr)) repeat(2, minmax(0, 0.55fr))"}}>
+          {DIA_NOMS.map((d,i) => <div key={d} className={`px-2 py-2 text-xs font-bold text-center ${i>=5?"text-gray-400":"text-gray-600"}`}>{d}</div>)}
         </div>
-        <div className="grid grid-cols-7">
+        <div className="grid" style={{gridTemplateColumns:"repeat(5, minmax(0, 1fr)) repeat(2, minmax(0, 0.55fr))"}}>
           {cells.map((d, idx) => {
             const isToday = d && year === today.getFullYear() && month === today.getMonth() && d === today.getDate();
             const isWeekend = idx % 7 >= 5;
