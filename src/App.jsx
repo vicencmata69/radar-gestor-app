@@ -1905,8 +1905,23 @@ export default function App(){
         return parts.join(" ");
       };
       const visitaText=formatVisita(r.visita_obra);
-      const comentarisParts=[visitaText,r.diagnosic_servial?r.diagnosic_servial.slice(0,200):null].filter(Boolean);
-      const nova={id:Date.now(),codi_obra:"",licitacio:r.objecte||"",client:r.organisme||"",public_privat:"PUBLICA",poblacio:"",estat:"PROPOSTA",data_presentacio:r.termini_presentacio||"",termini:r.termini_execucio||"",import_pec_sense_iva:r.import_sense_iva||"",classificacio:(r.classificacio_requerida||[]).map(c=>`${c.grup}${c.subgrup} Cat.${c.categoria}`).join(" | "),criteris_puntuacio:[...(r.criteris_automatics||[]).map(c=>`${c.nom} ${c.punts}pt`),...(r.criteris_judici_valor||[]).map(c=>`${c.nom} ${c.punts}pt`)].join(" + "),tecnica:memoriaRequerida,aval:r.garantia_definitiva||"",apertura:"",comentaris:comentarisParts.join(" | "),link_obra:r.enllac_publicacio?.url||r.enllac_publicacio||"",link_publicacio:"",analisi_completa:plecRawText||""};
+      // Construir l'objecte sobres a partir de r.obertura_sobres detectat per la IA.
+      // Determina el tipus segons les claus dels sobres trobats; propaga dates concretes
+      // a sobres.obertura. Les descripcions relatives queden al camp comentaris.
+      const sobresIA=Array.isArray(r.obertura_sobres)?r.obertura_sobres:[];
+      const sobresKeys=sobresIA.map(s=>String(s.sobre||"").trim()).filter(Boolean);
+      let sobresObj=null;
+      if(sobresKeys.length){
+        const tipusInferit=sobresKeys.includes("unic")?"unic":sobresKeys.length>=3?"tres":sobresKeys.length===2?"dos":"unic";
+        const obertura={};
+        for(const s of sobresIA){
+          if(s.sobre&&s.data&&/^\d{1,2}\/\d{1,2}\/\d{4}/.test(s.data))obertura[s.sobre]=s.data;
+        }
+        sobresObj={tipus:tipusInferit,paraula_clau:{},obertura};
+      }
+      const obertNotes=sobresIA.filter(s=>s.descripcio_relativa).map(s=>`📂 Obertura ${s.sobre}: ${s.descripcio_relativa}${s.lloc?` (lloc: ${s.lloc})`:""}`);
+      const comentarisParts=[visitaText,...obertNotes,r.diagnosic_servial?r.diagnosic_servial.slice(0,200):null].filter(Boolean);
+      const nova={id:Date.now(),codi_obra:"",licitacio:r.objecte||"",client:r.organisme||"",public_privat:"PUBLICA",poblacio:"",estat:"PROPOSTA",data_presentacio:r.termini_presentacio||"",termini:r.termini_execucio||"",import_pec_sense_iva:r.import_sense_iva||"",classificacio:(r.classificacio_requerida||[]).map(c=>`${c.grup}${c.subgrup} Cat.${c.categoria}`).join(" | "),criteris_puntuacio:[...(r.criteris_automatics||[]).map(c=>`${c.nom} ${c.punts}pt`),...(r.criteris_judici_valor||[]).map(c=>`${c.nom} ${c.punts}pt`)].join(" + "),tecnica:memoriaRequerida,aval:r.garantia_definitiva||"",apertura:"",comentaris:comentarisParts.join(" | "),link_obra:r.enllac_publicacio?.url||r.enllac_publicacio||"",link_publicacio:"",analisi_completa:plecRawText||"",...(sobresObj?{sobres:sobresObj}:{})};
       if(isSupabaseConfigured()){await supabase.from("licitacions").upsert(nova);await supabase.from("licitacions_log").insert({licitacio_id:nova.id,estat_anterior:"",estat_nou:nova.estat||"PROPOSTA",codi_obra:nova.codi_obra||""});}
       else{let llista=[];try{const r=localStorage.getItem(SK);if(r)llista=JSON.parse(r);}catch(e){}llista=[nova,...llista];localStorage.setItem(SK,JSON.stringify(llista));}
       setGestorRefreshKey(k=>k+1);setPlecSavedMsg("✅ Guardat al Gestor!");setTimeout(()=>setPlecSavedMsg(""),3000);
@@ -1974,6 +1989,28 @@ Si algun document NO té relació amb la resta (p.ex. un projecte diferent, un f
 3. Al JSON final, afegeix els noms dels fitxers descartats al camp "documents_descartats" (array d'strings).
 
 Si tots els documents pertanyen al mateix projecte, no cal cap avís — procedeix amb l'anàlisi normal.
+
+═══════════════════════════════════════════════════════════════
+🔍 REGLA 0B — IDENTIFICA TIPUS DE DOCUMENTS I AVISA SI EN FALTA
+═══════════════════════════════════════════════════════════════
+Classifica cada document adjuntat segons el seu tipus probable:
+  · PCAP (Plec de Clàusules Administratives Particulars)
+  · PPT (Plec de Prescripcions Tècniques)
+  · Anunci de publicació / PSCP / DOG / BOE (document curt amb dades de tràmits)
+  · Projecte executiu (memòria, plànols, amidaments)
+  · Altres
+
+Si l'usuari NOMÉS ha adjuntat un **Anunci de publicació** SENSE PCAP ni PPT,
+avisa-ho al PRINCIPI de l'informe amb aquest format:
+  ⚠️ **NOMÉS S'HA DETECTAT L'ANUNCI DE PUBLICACIÓ**
+  - Documents detectats: [llista]
+  - Falten: PCAP i/o PPT — sense aquests, l'anàlisi de classificació, solvència,
+    criteris de puntuació i requisits formals serà INCOMPLETA.
+  - Aquesta anàlisi cobrirà només: dates clau, visita d'obra, obertura de sobres
+    i altra informació superficial.
+  - Recomanació: descarrega el PCAP del perfil del contractant i torna a llançar.
+
+A continuació, fes l'anàlisi amb la informació disponible.
 
 ═══════════════════════════════════════════════════════════════
 MARC LEGAL — LCSP (Llei 9/2017) arts. 74-100 + RD 1098/2001
@@ -2332,12 +2369,28 @@ INSTRUCCIONS D'EXTRACCIÓ — segueix aquest esquema:
    - Garantia provisional (si escau)
    - Garantia definitiva (% i base de càlcul)
    - Condicions especials d'execució
-   - **VISITA D'OBRA** (concepte crític): és sovint un requisit eliminatori. Indica explícitament:
+   - **VISITA D'OBRA** (concepte crític): és sovint un requisit eliminatori.
+     ⚠️ Aquesta informació sovint NO és al PCAP/PPT principal, sinó a l'**Anunci de publicació**
+     (el document curt de "Plataforma de Serveis de Contractació Pública", "PSCP" o
+     similar) o a la fitxa de "Observacions de l'expedient". Si veus algun document
+     d'aquest tipus entre els PDFs adjunts, EXTRAU especialment d'allà.
+     Indica explícitament:
      · obligatoria (true/false) — si saltar-la suposa exclusió o si és facultativa
      · data (si està publicada, format DD/MM/YYYY HH:MM; "no publicada" si encara cal confirmar; "" si no aplica)
-     · lloc (adreça exacta on quedar amb l'òrgan, si està al plec)
-     · observacions (cal acreditar assistència amb document signat, contacte previ, etc.)
-     Si el plec no menciona visita, posa obligatoria=false, data="", observacions="No prevista".
+     · lloc (adreça exacta on quedar amb l'òrgan, si està al plec — sé MOLT específic, p.ex.
+       "Porta principal Hospital X (porta giratòria)")
+     · observacions (com acreditar assistència, contacte previ obligatori, correu/telèfon
+       de l'organisme — sigues exhaustiu)
+     Si el plec no menciona visita: obligatoria=false, data="", observacions="No prevista".
+   - **OBERTURA DE SOBRES** (concepte nou): l'Anunci de publicació sovint conté un quadre
+     "Obertura de sobres" amb una entrada per cada sobre i la seva data/lloc. EXTRAU-LO
+     SEMPRE que existeixi. Per a cada sobre, omple:
+     · sobre: "unic" / "1A" / "2B" / "3C" segons el nom del sobre al plec
+     · data: si està publicada, format "DD/MM/YYYY HH:MM"; "" si encara no és pública
+     · descripcio_relativa: si la data no és absoluta sinó relativa (p.ex. "A partir de la
+       data fi de presentació + 24h", "Després de l'obertura del sobre anterior")
+     · lloc: si està indicat
+     · acte_public: true/false (si és obertura pública)
    - Penalitats rellevants
 
 6. DIAGNÒSTIC PER A SERVIAL — SECCIÓ CRÍTICA, FES-LA AMB MÀXIM RIGOR
@@ -2378,7 +2431,7 @@ Al FINAL del text, afegeix el JSON entre aquests marcadors exactes (sense backti
 - Cada objecte JSON del lot ha de tenir el camp "lot" amb el número/nom del lot
 
 --JSON_INICI--
-[{"lot":"","expedient":"","objecte":"","organisme":"","cpv":"","import_sense_iva":0,"import_amb_iva":0,"valor_estimat":0,"termini_execucio":"","termini_presentacio":"DD/MM/YYYY HH:MM","exigeix_classificacio":true,"classificacio_requerida":[{"grup":"C","subgrup":"2","categoria":3}],"classificacio_substitueix_solvencia":true,"solvencia_obligatoria":true,"permet_substitucio_per_classificacio":false,"text_substitucio_pcap":"","subcas_explicacio":"","solvencia_economica":"","solvencia_tecnica":"","criteris_automatics":[{"nom":"Preu","punts":60,"formula":""}],"criteris_judici_valor":[{"nom":"Planificació i seqüència d'execució","punts":15,"subcriteris":[{"codi":"1","nom":"Procediment d'execució","punts":17,"nivell":1,"fills":[{"codi":"1.1","nom":"Implantació i exposició","punts":13,"nivell":2,"fills":[{"codi":"1.1.1","nom":"Implantació","punts":2,"nivell":3,"fills":[]},{"codi":"1.1.2","nom":"Execució","punts":11,"nivell":3,"fills":[]}]},{"codi":"1.2","nom":"Afectacions a l'entorn","punts":4,"nivell":2,"fills":[]}]}],"que_valoren":"Coherència, adequació al projecte, compatibilitat","bandes_puntuacio":[{"rang":"0-2","descripcio":"proposta genèrica o poc adaptada"},{"rang":"3-4","descripcio":"correcta i coherent"},{"rang":"5-6","descripcio":"molt ben estructurada i específica"}],"inconsistencia":""}],"requisits_memoria":{"max_pagines":"","format":"DIN A4","font":"","interlineat":"","annexos":"","penalitzacio_excedir":""},"llindar_minim_tecnic":{"te_llindar":false,"puntuacio_minima":0,"consequencia":""},"total_punts_automatics":60,"total_punts_judici_valor":40,"total_punts":100,"temeritat":{"formula":"","percentatge":"","procediment":"","consequencia":""},"criteris_exclusio":[""],"garantia_definitiva":"5% preu adjudicació s/IVA","garantia_provisional":"","condicions_especials":"","visita_obra":{"obligatoria":false,"data":"","lloc":"","observacions":"No prevista"},"penalitats":"","diagnosic_servial":"","enllac_publicacio":"","documents_descartats":[]}]
+[{"lot":"","expedient":"","objecte":"","organisme":"","cpv":"","import_sense_iva":0,"import_amb_iva":0,"valor_estimat":0,"termini_execucio":"","termini_presentacio":"DD/MM/YYYY HH:MM","exigeix_classificacio":true,"classificacio_requerida":[{"grup":"C","subgrup":"2","categoria":3}],"classificacio_substitueix_solvencia":true,"solvencia_obligatoria":true,"permet_substitucio_per_classificacio":false,"text_substitucio_pcap":"","subcas_explicacio":"","solvencia_economica":"","solvencia_tecnica":"","criteris_automatics":[{"nom":"Preu","punts":60,"formula":""}],"criteris_judici_valor":[{"nom":"Planificació i seqüència d'execució","punts":15,"subcriteris":[{"codi":"1","nom":"Procediment d'execució","punts":17,"nivell":1,"fills":[{"codi":"1.1","nom":"Implantació i exposició","punts":13,"nivell":2,"fills":[{"codi":"1.1.1","nom":"Implantació","punts":2,"nivell":3,"fills":[]},{"codi":"1.1.2","nom":"Execució","punts":11,"nivell":3,"fills":[]}]},{"codi":"1.2","nom":"Afectacions a l'entorn","punts":4,"nivell":2,"fills":[]}]}],"que_valoren":"Coherència, adequació al projecte, compatibilitat","bandes_puntuacio":[{"rang":"0-2","descripcio":"proposta genèrica o poc adaptada"},{"rang":"3-4","descripcio":"correcta i coherent"},{"rang":"5-6","descripcio":"molt ben estructurada i específica"}],"inconsistencia":""}],"requisits_memoria":{"max_pagines":"","format":"DIN A4","font":"","interlineat":"","annexos":"","penalitzacio_excedir":""},"llindar_minim_tecnic":{"te_llindar":false,"puntuacio_minima":0,"consequencia":""},"total_punts_automatics":60,"total_punts_judici_valor":40,"total_punts":100,"temeritat":{"formula":"","percentatge":"","procediment":"","consequencia":""},"criteris_exclusio":[""],"garantia_definitiva":"5% preu adjudicació s/IVA","garantia_provisional":"","condicions_especials":"","visita_obra":{"obligatoria":false,"data":"","lloc":"","observacions":"No prevista"},"obertura_sobres":[{"sobre":"1A","data":"","descripcio_relativa":"","lloc":"","acte_public":false}],"penalitats":"","diagnosic_servial":"","enllac_publicacio":"","documents_descartats":[]}]
 --JSON_FI--`;
       const SYSTEM_PLEC=`Ets un expert en contractació pública espanyola (LCSP Llei 9/2017, RD 1098/2001). Regles clau:
 1. CLASSIFICACIÓ SUBSTITUEIX SOLVÈNCIA (arts. 77-85): no són acumulables. En obres ≥500k€ la classificació és obligatòria.
