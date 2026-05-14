@@ -1102,7 +1102,7 @@ function parseVisitaFromComentaris(comentaris){
 const SOBRE_LABEL = { unic:"Sobre Únic", "1A":"Sobre 1/A", "2B":"Sobre 2/B", "3C":"Sobre 3/C" };
 const EVENT_TYPES = {
   presentacio:   { color:"bg-red-500",    text:"text-white", emoji:"🔴", label:"Presentació",          durada:30 },
-  visitaObligat: { color:"bg-orange-500", text:"text-white", emoji:"🟠", label:"Visita obligatòria",   durada:60 },
+  visitaObligat: { color:"bg-yellow-400", text:"text-gray-900", emoji:"🟡", label:"Visita obligatòria",   durada:60 },
   visitaFacult:  { color:"bg-blue-500",   text:"text-white", emoji:"🔵", label:"Visita facultativa",   durada:60 },
   paraulaClau:   { color:"bg-purple-600", text:"text-white", emoji:"🟣", label:"Paraula clau enviada", durada:15 },
   obertura:      { color:"bg-green-600",  text:"text-white", emoji:"🟢", label:"Obertura del sobre",   durada:30 }
