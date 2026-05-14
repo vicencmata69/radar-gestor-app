@@ -1019,7 +1019,7 @@ function GestorTab({refreshKey=0}){
       {filtered.length===0?<div className="text-center py-16 text-gray-400"><div className="text-4xl mb-2">📋</div><div className="font-semibold">{lic.length===0?"Cap licitacio":"Cap resultat"}</div></div>
         :<div className="gestor-table-wrap rounded-xl border border-gray-200 shadow-sm" style={{overflowX:"auto"}} onClick={()=>setActiveColFilter(null)}><table className="text-xs" style={{minWidth:"1900px"}}><thead className="sticky top-0 z-10"><tr className="bg-gray-100 border-b border-gray-200 text-gray-500 uppercase">{(()=>{
           const FILTERABLE={codi_obra:{key:"codi_obra",vals:()=>[...new Set(lic.map(l=>l.codi_obra||"---"))].sort()},estat:{key:"estat",vals:()=>ESTATS},public_privat:{key:"public_privat",vals:()=>tipus},poblacio:{key:"poblacio",vals:()=>[...new Set(lic.map(l=>l.poblacio||"---"))].sort()},client:{key:"client",vals:()=>[...new Set(lic.map(l=>l.client||"---"))].sort()},data_presentacio:{key:"data_presentacio",vals:()=>[...new Set(lic.map(l=>l.data_presentacio||"---"))].sort()},termini:{key:"termini",vals:()=>[...new Set(lic.map(l=>l.termini||"---"))].sort()},import_pec:{key:"import_pec",vals:()=>[...new Set(lic.map(l=>l.import_pec_sense_iva?fmt(l.import_pec_sense_iva):"---"))].sort((a,b)=>{const na=parseFloat(a.replace(/\./g,"").replace(",",".")),nb=parseFloat(b.replace(/\./g,"").replace(",","."));return(isNaN(na)?0:na)-(isNaN(nb)?0:nb);})},classificacio:{key:"classificacio",vals:()=>[...new Set(lic.map(l=>l.classificacio||"---"))].sort()},tecnica:{key:"tecnica",vals:()=>["Sí","No"]}};
-          const cols=[["","70px"],["Codi Obra","90px","codi_obra"],["Licitacio","280px"],["Client","180px","client"],["P/P","60px","public_privat"],["Poblacio","120px","poblacio"],["Estat","110px","estat"],["Data Present.","160px","data_presentacio"],["Termini","80px","termini"],["Import s/IVA","110px","import_pec"],["Classif.","80px","classificacio"],["Criteris","200px"],["Tècnica","65px","tecnica"],["Sobres","240px"],["Comentaris","400px"],["Aval","70px"],["🏛 Organisme","100px"]];
+          const cols=[["","70px"],["Codi Obra","90px","codi_obra"],["Licitacio","280px"],["Client","180px","client"],["P/P","60px","public_privat"],["Poblacio","120px","poblacio"],["Estat","110px","estat"],["Data Present.","160px","data_presentacio"],["Termini","80px","termini"],["Import s/IVA","110px","import_pec"],["Classif.","80px","classificacio"],["Criteris","200px"],["Tècnica","65px","tecnica"],["Sobres","260px"],["Comentaris","400px"],["Aval","70px"],["🏛 Organisme","100px"]];
           return cols.map(([h,w,filterKey])=>{
             const fDef=filterKey?FILTERABLE[filterKey]:null;
             const isActive=colFilters[filterKey]?.length>0;
@@ -1040,18 +1040,27 @@ function GestorTab({refreshKey=0}){
   if(!isPub||!isPres)return<span className="text-xs text-gray-300">—</span>;
   const sobres=l.sobres||{};
   const tipus=sobres.tipus||"";
-  const obert=sobres.obert||{};
+  const paraulaClau=sobres.paraula_clau||{};
+  const obertura=sobres.obertura||{};
   const llista=tipus==="unic"?[["unic","Sobre únic"]]:tipus==="dos"?[["1A","Sobre 1/A"],["2B","Sobre 2/B"]]:tipus==="tres"?[["1A","Sobre 1/A"],["2B","Sobre 2/B"],["3C","Sobre 3/C"]]:[];
   const updateSobres=newSobres=>{const updated={...l,sobres:newSobres};save(lic.map(x=>x.id===l.id?updated:x));saveOne(updated);};
   const todayStr=()=>{const n=new Date();return`${String(n.getDate()).padStart(2,"0")}/${String(n.getMonth()+1).padStart(2,"0")}/${n.getFullYear()}`;};
   return<div className="space-y-1">
-    <select value={tipus} onChange={e=>updateSobres({...sobres,tipus:e.target.value,obert:sobres.obert||{}})} className={`text-xs border rounded px-1 py-0.5 w-full ${tipus?"bg-blue-50 text-blue-700 font-semibold":"bg-amber-50 text-amber-700"}`}>
+    <select value={tipus} onChange={e=>updateSobres({...sobres,tipus:e.target.value,paraula_clau:sobres.paraula_clau||{},obertura:sobres.obertura||{}})} className={`text-xs border rounded px-1 py-0.5 w-full ${tipus?"bg-blue-50 text-blue-700 font-semibold":"bg-amber-50 text-amber-700"}`}>
       <option value="">— Tria tipus —</option>
       <option value="unic">Sobre únic</option>
       <option value="dos">Dos sobres</option>
       <option value="tres">Tres sobres</option>
     </select>
-    {llista.length>0&&(()=>{const oberts=llista.filter(([k])=>!!obert[k]).length;return<><div className={`text-[11px] font-semibold px-2 py-0.5 rounded ${oberts===llista.length?"bg-green-100 text-green-800":oberts>0?"bg-blue-50 text-blue-700":"bg-gray-100 text-gray-600"}`}>{oberts}/{llista.length} sobres oberts</div><table className="text-[11px] w-full"><tbody>{llista.map(([key,label])=>{const data=obert[key];const isOpen=!!data;return<tr key={key} className="border-t border-gray-100"><td className="pr-1 py-0.5 text-gray-700 whitespace-nowrap">{label}</td><td className="text-center w-5"><input type="checkbox" className="w-3 h-3 cursor-pointer accent-green-600" checked={isOpen} onChange={e=>{const newObert={...obert};if(e.target.checked)newObert[key]=todayStr();else delete newObert[key];updateSobres({...sobres,obert:newObert});}}/></td><td className="pl-1">{isOpen?<span className="text-green-800 font-bold whitespace-nowrap">🟢 {data}</span>:<span className="text-gray-400 text-[10px]">⏳ pendent</span>}</td></tr>;})}</tbody></table></>;})()}
+    {llista.length>0&&(()=>{const oberts=llista.filter(([k])=>!!obertura[k]).length;const claus=llista.filter(([k])=>!!paraulaClau[k]).length;return<>
+      <div className="flex gap-1 text-[10px]">
+        <div className={`flex-1 text-center font-semibold px-1.5 py-0.5 rounded ${claus===llista.length?"bg-purple-200 text-purple-900":claus>0?"bg-purple-50 text-purple-700":"bg-gray-100 text-gray-600"}`}>🔑 {claus}/{llista.length}</div>
+        <div className={`flex-1 text-center font-semibold px-1.5 py-0.5 rounded ${oberts===llista.length?"bg-green-200 text-green-900":oberts>0?"bg-green-50 text-green-700":"bg-gray-100 text-gray-600"}`}>🟢 {oberts}/{llista.length}</div>
+      </div>
+      <table className="text-[10px] w-full"><thead><tr className="text-gray-400 text-[9px]"><th className="text-left pl-0.5">Sobre</th><th className="text-center">🔑 clau</th><th className="text-center">🟢 obertura</th></tr></thead><tbody>{llista.map(([key,label])=>{const claudata=paraulaClau[key];const obdata=obertura[key];return<tr key={key} className="border-t border-gray-100"><td className="pr-1 py-0.5 text-gray-700 whitespace-nowrap">{label.replace("Sobre ","")}</td>
+        <td className="text-center"><div className="flex items-center justify-center gap-0.5"><input type="checkbox" className="w-3 h-3 cursor-pointer accent-purple-600" checked={!!claudata} onChange={e=>{const np={...paraulaClau};if(e.target.checked)np[key]=todayStr();else delete np[key];updateSobres({...sobres,paraula_clau:np});}}/><span className="text-[9px] text-purple-700 font-bold whitespace-nowrap">{claudata?claudata.slice(0,5):""}</span></div></td>
+        <td className="text-center"><div className="flex items-center justify-center gap-0.5"><input type="checkbox" className="w-3 h-3 cursor-pointer accent-green-600" checked={!!obdata} onChange={e=>{const no={...obertura};if(e.target.checked)no[key]=todayStr();else delete no[key];updateSobres({...sobres,obertura:no});}}/><span className="text-[9px] text-green-800 font-bold whitespace-nowrap">{obdata?obdata.slice(0,5):""}</span></div></td>
+      </tr>;})}</tbody></table></>;})()}
   </div>;
 })()}</td><td className="px-2 py-2"><div className="space-y-1">{(()=>{const c=l.comentaris||"";const m=c.match(/(?:🏗️|📍)\s*VISITA\s*(?:D'?)?OBRA:[^|]*/i);if(!m)return null;const txt=m[0].trim();const isObligat=/OBLIGAT/i.test(txt);return <div className={`text-xs px-2 py-1 rounded font-semibold whitespace-pre-wrap ${isObligat?"bg-red-100 text-red-800 border border-red-300":"bg-blue-50 text-blue-700 border border-blue-200"}`}>{txt}</div>;})()}<textarea rows={4} className="text-xs border rounded px-1 py-0.5 w-full resize-y" style={{minHeight:"60px",maxHeight:"200px"}} value={l.comentaris||""} placeholder="Comentaris" onBlur={e=>{if(e.target.value!==(l.comentaris||"")){const updated={...l,comentaris:e.target.value};save(lic.map(x=>x.id===l.id?updated:x));saveOne(updated);}}} onChange={e=>{save(lic.map(x=>x.id===l.id?{...l,comentaris:e.target.value}:x));}}/></div></td><td className="px-2 py-2 text-gray-600">{l.aval||"---"}</td><td className="px-2 py-2"><div className="flex items-center gap-1">{l.link_obra&&<a href={l.link_obra} target="_blank" rel="noreferrer" className="text-blue-500 hover:text-blue-700" title={l.link_obra}>🏛</a>}<input className="text-xs border rounded px-1 py-0.5 w-full" value={l.link_obra||""} placeholder="URL organisme" onBlur={e=>{if(e.target.value!==(l.link_obra||"")){const updated={...l,link_obra:e.target.value};save(lic.map(x=>x.id===l.id?updated:x));saveOne(updated);}}} onChange={e=>{save(lic.map(x=>x.id===l.id?{...l,link_obra:e.target.value}:x));}}/></div></td></tr>))}</tbody></table></div>}
       <div className="mt-2 text-xs text-gray-400 text-right">{filtered.length} de {lic.length} licitacions — Sincronitzat amb Supabase</div>
@@ -1095,7 +1104,8 @@ const EVENT_TYPES = {
   presentacio:   { color:"bg-red-500",    text:"text-white", emoji:"🔴", label:"Presentació",          durada:30 },
   visitaObligat: { color:"bg-orange-500", text:"text-white", emoji:"🟠", label:"Visita obligatòria",   durada:60 },
   visitaFacult:  { color:"bg-blue-500",   text:"text-white", emoji:"🔵", label:"Visita facultativa",   durada:60 },
-  obertura:      { color:"bg-green-600",  text:"text-white", emoji:"🟢", label:"Obertura sobre",       durada:30 }
+  paraulaClau:   { color:"bg-purple-600", text:"text-white", emoji:"🟣", label:"Paraula clau enviada", durada:15 },
+  obertura:      { color:"bg-green-600",  text:"text-white", emoji:"🟢", label:"Obertura del sobre",   durada:30 }
 };
 function extractCalendarEvents(lic, onlyActive){
   const ACTIVE = new Set(["EN ESTUDI","PROPOSTA","PRESENTADA","ADJUDICADA"]);
@@ -1108,10 +1118,16 @@ function extractCalendarEvents(lic, onlyActive){
     // 🟠/🔵 Visita d'obra
     const v = parseVisitaFromComentaris(l.comentaris);
     if (v) events.push({ date: v.date, type: v.obligat ? "visitaObligat" : "visitaFacult", lic: l, lloc: v.lloc });
-    // 🟢 Obertures de sobres
+    // 🟣 Paraula clau (data en què vam enviar la clau d'accés al sobre)
     const sobres = l.sobres || {};
-    const obert = sobres.obert || {};
-    for (const [key, dateStr] of Object.entries(obert)) {
+    const paraula = sobres.paraula_clau || {};
+    for (const [key, dateStr] of Object.entries(paraula)) {
+      const d = parseFullDate(dateStr);
+      if (d) events.push({ date: d, type: "paraulaClau", subType: key, lic: l });
+    }
+    // 🟢 Obertura real del sobre (acte de l'òrgan)
+    const obertura = sobres.obertura || {};
+    for (const [key, dateStr] of Object.entries(obertura)) {
       const d = parseFullDate(dateStr);
       if (d) events.push({ date: d, type: "obertura", subType: key, lic: l });
     }
@@ -1126,7 +1142,8 @@ function buildEventTitle(ev){
   const t = EVENT_TYPES[ev.type];
   const codi = ev.lic.codi_obra || "(sense codi)";
   const lic = (ev.lic.licitacio || "").slice(0, 80);
-  if (ev.type === "obertura") return `${t.emoji} ${SOBRE_LABEL[ev.subType]||"Sobre"} · ${codi} · ${lic}`;
+  if (ev.type === "obertura") return `${t.emoji} Obertura ${SOBRE_LABEL[ev.subType]||"sobre"} · ${codi} · ${lic}`;
+  if (ev.type === "paraulaClau") return `${t.emoji} 🔑 Paraula clau ${SOBRE_LABEL[ev.subType]||"sobre"} · ${codi} · ${lic}`;
   return `${t.emoji} ${t.label} · ${codi} · ${lic}`;
 }
 function buildICS(events){
@@ -1208,7 +1225,7 @@ function CalendariTab(){
   const [month, setMonth] = useState(today.getMonth());
   const [lic, setLic] = useState([]);
   const [onlyActive, setOnlyActive] = useState(true);
-  const [visible, setVisible] = useState({ presentacio:true, visitaObligat:true, visitaFacult:true, obertura:true });
+  const [visible, setVisible] = useState({ presentacio:true, visitaObligat:true, visitaFacult:true, paraulaClau:true, obertura:true });
   const [selectedEvent, setSelectedEvent] = useState(null);
 
   useEffect(() => {
@@ -1311,7 +1328,7 @@ function CalendariTab(){
                       {(eventsByDay[d] || []).map((ev, i) => {
                         const t = EVENT_TYPES[ev.type];
                         const time = ev.date.getHours() ? `${String(ev.date.getHours()).padStart(2,"0")}:${String(ev.date.getMinutes()).padStart(2,"0")} ` : "";
-                        const label = ev.type === "obertura" ? SOBRE_LABEL[ev.subType] : t.label;
+                        const label = (ev.type === "obertura" || ev.type === "paraulaClau") ? SOBRE_LABEL[ev.subType] : t.label;
                         return (
                           <button key={i} onClick={()=>setSelectedEvent(ev)}
                             className={`block w-full text-left text-[10px] px-1 py-0.5 rounded ${t.color} ${t.text} hover:opacity-80 truncate`}
@@ -1337,7 +1354,7 @@ function CalendariTab(){
             {(() => {
               const ev = selectedEvent;
               const t = EVENT_TYPES[ev.type];
-              const label = ev.type === "obertura" ? `${SOBRE_LABEL[ev.subType]} obert` : t.label;
+              const label = ev.type === "obertura" ? `Obertura ${SOBRE_LABEL[ev.subType]}` : ev.type === "paraulaClau" ? `🔑 Paraula clau ${SOBRE_LABEL[ev.subType]}` : t.label;
               const dateStr = `${String(ev.date.getDate()).padStart(2,"0")}/${String(ev.date.getMonth()+1).padStart(2,"0")}/${ev.date.getFullYear()}`;
               const timeStr = (ev.date.getHours() || ev.date.getMinutes()) ? ` · ${String(ev.date.getHours()).padStart(2,"0")}:${String(ev.date.getMinutes()).padStart(2,"0")}` : "";
               return <>
