@@ -1279,7 +1279,7 @@ function CalendariTab(){
   };
 
   return (
-    <div className="max-w-6xl mx-auto px-4 py-5 space-y-4">
+    <div className="max-w-[1700px] mx-auto px-6 py-5 space-y-4">
       <div className="flex items-center justify-between flex-wrap gap-3">
         <h2 className="text-xl font-bold text-gray-900">📅 Calendari de Licitacions</h2>
         <div className="flex items-center gap-2">
@@ -1320,7 +1320,7 @@ function CalendariTab(){
             const isToday = d && year === today.getFullYear() && month === today.getMonth() && d === today.getDate();
             const isWeekend = idx % 7 >= 5;
             return (
-              <div key={idx} className={`border-r border-b border-gray-100 min-h-24 p-1 ${!d ? "bg-gray-50" : isWeekend ? "bg-stone-100/50" : "bg-white"}`}>
+              <div key={idx} className={`border-r border-b border-gray-100 min-h-28 p-1.5 ${!d ? "bg-gray-50" : isWeekend ? "bg-stone-100/50" : "bg-white"}`}>
                 {d && (
                   <>
                     <div className={`text-xs font-semibold mb-1 ${isToday ? "bg-blue-600 text-white rounded-full w-6 h-6 flex items-center justify-center" : "text-gray-600"}`}>{d}</div>
