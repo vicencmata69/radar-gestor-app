@@ -1109,8 +1109,16 @@ const EVENT_TYPES = {
 };
 function extractCalendarEvents(lic, onlyActive){
   const ACTIVE = new Set(["EN ESTUDI","PROPOSTA","PRESENTADA","ADJUDICADA"]);
+  // Estats terminals negatius: una licitació aquí ja no té cap acció futura
+  // pendent, així que MAI genera esdeveniments al calendari, ni tan sols amb
+  // el filtre "Totes". En passar una licitació a DESCARTADA, les seves dates
+  // (visita, obertures, presentació) desapareixen automàticament del calendari.
+  // Important: NO es destrueix cap dada a Supabase — si es reverteix l'estat,
+  // els esdeveniments tornen a aparèixer.
+  const NEGATIVE = new Set(["DESCARTADA","NO PRESENTADA","NO ADJUDICADA","NO PROPOSTA"]);
   const events = [];
   for (const l of lic) {
+    if (NEGATIVE.has(l.estat)) continue;
     if (onlyActive && !ACTIVE.has(l.estat)) continue;
     // 🔴 Presentació
     const dp = parseFullDate(l.data_presentacio);
@@ -1307,7 +1315,7 @@ function CalendariTab(){
         </label>
         <label className="flex items-center gap-1.5 text-xs cursor-pointer">
           <input type="radio" name="cal-estat" checked={!onlyActive} onChange={()=>setOnlyActive(false)} className="accent-blue-600"/>
-          <span>Totes</span>
+          <span>Totes <span className="text-gray-400">(excl. descartades)</span></span>
         </label>
       </div>
 
