@@ -317,6 +317,21 @@ const inferClassificacio = (cpv, imp) => {
   return grups.slice(0,1).map(g => ({ grup: g.charAt(0), subgrup: g.slice(1), categoria: cat }));
 };
 const parseJSON = raw => { if(!raw)return null; if(raw.trim().startsWith("["))try{return JSON.parse(raw.trim());}catch(e){} const m1=raw.match(/\[[\s\S]*\]/); if(m1)try{return JSON.parse(m1[0]);}catch(e){try{return JSON.parse(m1[0].replace(/,(\s*[}\]])/g,"$1"));}catch(e2){}} const m2=raw.match(/```(?:json)?\s*([\s\S]*?)\s*```/); if(m2)try{return JSON.parse(m2[1]);}catch(e){} return null; };
+// Formata visita_obra de manera segura: accepta tant el format antic (string,
+// p.ex. "No") com el nou (objecte {obligatoria,data,lloc,observacions}).
+// SEMPRE retorna un string — mai un objecte — per no petar el render de React.
+function fmtVisitaObra(v){
+  if(v==null)return"";
+  if(typeof v==="string"){const s=v.trim();if(!s||s.toLowerCase()==="no")return"No prevista";return s;}
+  if(typeof v==="object"){
+    const parts=[v.obligatoria===true?"OBLIGATÒRIA ⚠️":((v.data||v.lloc)?"Facultativa":"No prevista")];
+    if(v.data)parts.push(`· 📅 ${v.data}`);
+    if(v.lloc)parts.push(`· 📍 ${v.lloc}`);
+    if(v.observacions&&v.observacions!=="No prevista")parts.push(`· ${v.observacions}`);
+    return parts.join(" ");
+  }
+  return String(v);
+}
 // Robust JSON parser for AI plec output: tries plain parse, code-fence strip,
 // trailing-comma stripping, malformed-key recovery, and array/object extraction.
 // Returns null on failure.
@@ -2639,7 +2654,7 @@ ${critsJV?`<table><thead><tr><th>Criteri judici de valor</th><th width="60">Punt
 <h2>🔒 Garanties i condicions</h2>
 ${r.garantia_definitiva?`<p><strong>Garantia definitiva:</strong> ${r.garantia_definitiva}</p>`:""}
 ${r.garantia_provisional?`<p><strong>Garantia provisional:</strong> ${r.garantia_provisional}</p>`:""}
-${r.visita_obra?`<p><strong>Visita d'obra:</strong> ${r.visita_obra}</p>`:""}
+${(()=>{const vt=fmtVisitaObra(r.visita_obra);return vt?`<p><strong>Visita d'obra:</strong> ${vt}</p>`:"";})()}
 ${r.condicions_especials?`<p><strong>Condicions especials:</strong> ${r.condicions_especials}</p>`:""}
 ${r.penalitats?`<p><strong>Penalitats:</strong> ${r.penalitats}</p>`:""}
 </div>
@@ -3023,7 +3038,7 @@ ${informeText?`<div class="informe"><h2>📝 Informe complet de l'anàlisi</h2>$
                   <div className={`text-xs font-semibold px-3 py-1.5 rounded-full inline-block ${pctAuto>=60?"bg-blue-400/30":"bg-amber-400/30"}`}>{pctAuto>=60?"💰 PREU DOMINANT — Prioritzar oferta econòmica agressiva":"📝 QUALITAT DOMINANT — Prioritzar memòria tècnica detallada"}</div>
                 </div>
               </div>;})()}
-              <div className="bg-stone-50 rounded-xl border shadow-sm p-4"><h3 className="font-semibold text-gray-700 mb-3">🔒 Garanties i condicions</h3><div className="space-y-1 text-xs">{r.garantia_definitiva&&<div className="flex gap-2"><span className="text-gray-400 shrink-0 w-36">Garantia definitiva:</span><span className="font-medium text-gray-800">{r.garantia_definitiva}</span></div>}{r.visita_obra&&<div className="flex gap-2"><span className="text-gray-400 shrink-0 w-36">Visita d'obra:</span><span className="font-medium text-gray-800">{r.visita_obra}</span></div>}{r.condicions_especials&&<div className="flex gap-2"><span className="text-gray-400 shrink-0 w-36">Condicions especials:</span><span className="font-medium text-gray-800">{r.condicions_especials}</span></div>}</div></div>
+              <div className="bg-stone-50 rounded-xl border shadow-sm p-4"><h3 className="font-semibold text-gray-700 mb-3">🔒 Garanties i condicions</h3><div className="space-y-1 text-xs">{r.garantia_definitiva&&<div className="flex gap-2"><span className="text-gray-400 shrink-0 w-36">Garantia definitiva:</span><span className="font-medium text-gray-800">{r.garantia_definitiva}</span></div>}{(()=>{const vt=fmtVisitaObra(r.visita_obra);return vt?<div className="flex gap-2"><span className="text-gray-400 shrink-0 w-36">Visita d'obra:</span><span className={"font-medium "+(/OBLIGAT/i.test(vt)?"text-red-700 font-bold":"text-gray-800")}>{vt}</span></div>:null;})()}{r.condicions_especials&&<div className="flex gap-2"><span className="text-gray-400 shrink-0 w-36">Condicions especials:</span><span className="font-medium text-gray-800">{r.condicions_especials}</span></div>}</div></div>
               {r.diagnosic_servial&&<div className="bg-amber-50 border border-slate-200 rounded-xl p-4"><h3 className="font-semibold text-amber-800 mb-2">⚠️ Diagnòstic per a Servial</h3><p className="text-xs text-slate-800 leading-relaxed whitespace-pre-wrap">{r.diagnosic_servial}</p></div>}
             </div>))}
             {plecView==="text"&&plecRawText&&<div className="bg-stone-50 rounded-xl border shadow-sm p-5"><div className="text-gray-700 text-xs leading-relaxed whitespace-pre-wrap">{plecRawText.replace(/--JSON_INICI--[\s\S]*?--JSON_FI--/,"").trim()}</div></div>}
