@@ -317,6 +317,20 @@ const inferClassificacio = (cpv, imp) => {
   return grups.slice(0,1).map(g => ({ grup: g.charAt(0), subgrup: g.slice(1), categoria: cat }));
 };
 const parseJSON = raw => { if(!raw)return null; if(raw.trim().startsWith("["))try{return JSON.parse(raw.trim());}catch(e){} const m1=raw.match(/\[[\s\S]*\]/); if(m1)try{return JSON.parse(m1[0]);}catch(e){try{return JSON.parse(m1[0].replace(/,(\s*[}\]])/g,"$1"));}catch(e2){}} const m2=raw.match(/```(?:json)?\s*([\s\S]*?)\s*```/); if(m2)try{return JSON.parse(m2[1]);}catch(e){} return null; };
+// Valida l'enllaç de publicació: només accepta URLs amb ruta específica
+// (fitxa concreta de la licitació). Rebutja el domini pelat o només locale
+// (https://contractaciopublica.cat, .../ca) retornant "" — millor buit que
+// un enllaç inútil que enganya l'usuari.
+function validPubUrl(u){
+  const s=String((u&&u.url)||u||"").trim();
+  if(!s)return"";
+  try{
+    const url=new URL(s);
+    const path=url.pathname.replace(/\/+$/,"");
+    if(!path||/^\/(ca|es|en|cat)?$/i.test(path))return"";
+    return s;
+  }catch(e){return"";}
+}
 // Formata visita_obra de manera segura: accepta tant el format antic (string,
 // p.ex. "No") com el nou (objecte {obligatoria,data,lloc,observacions}).
 // SEMPRE retorna un string — mai un objecte — per no petar el render de React.
@@ -1748,7 +1762,7 @@ export default function App(){
     return data.map(r=>{
       const terminiRaw=r.termini_presentacio_ofertes||"";
       const terminiDate=terminiRaw?new Date(terminiRaw):null;
-      const linkUrl=r.enllac_publicacio?.url||r.enllac_publicacio||"";
+      const linkUrl=validPubUrl(r.enllac_publicacio);
       const pres=parseFloat(r.pressupost_licitacio_sense)||0;
       const valEst=parseFloat(r.valor_estimat_contracte)||parseFloat(r.valor_estimat_expedient)||0;
       // Si hi ha valor estimat molt superior (>2x) al pressupost, usar el valor estimat
@@ -1811,7 +1825,7 @@ export default function App(){
       return data.map(r=>{
         const terminiRaw=r.termini_presentacio_ofertes||"";
         const terminiDate=terminiRaw?new Date(terminiRaw):null;
-        const linkUrl=r.enllac_publicacio?.url||r.enllac_publicacio||"";
+        const linkUrl=validPubUrl(r.enllac_publicacio);
         return{
           expedient:r.codi_expedient||"",
           objecte:r.objecte_contracte||r.denominacio||"",
@@ -1944,7 +1958,7 @@ export default function App(){
       }
       const obertNotes=sobresIA.filter(s=>s.descripcio_relativa).map(s=>`📂 Obertura ${s.sobre}: ${s.descripcio_relativa}${s.lloc?` (lloc: ${s.lloc})`:""}`);
       const comentarisParts=[visitaText,...obertNotes,r.diagnosic_servial?r.diagnosic_servial.slice(0,200):null].filter(Boolean);
-      const nova={id:Date.now(),codi_obra:"",licitacio:r.objecte||"",client:r.organisme||"",public_privat:"PUBLICA",poblacio:"",estat:"PROPOSTA",data_presentacio:r.termini_presentacio||"",termini:r.termini_execucio||"",import_pec_sense_iva:r.import_sense_iva||"",classificacio:(r.classificacio_requerida||[]).map(c=>`${c.grup}${c.subgrup} Cat.${c.categoria}`).join(" | "),criteris_puntuacio:[...(r.criteris_automatics||[]).map(c=>`${c.nom} ${c.punts}pt`),...(r.criteris_judici_valor||[]).map(c=>`${c.nom} ${c.punts}pt`)].join(" + "),tecnica:memoriaRequerida,aval:r.garantia_definitiva||"",apertura:"",comentaris:comentarisParts.join(" | "),link_obra:r.enllac_publicacio?.url||r.enllac_publicacio||"",link_publicacio:"",analisi_completa:plecRawText||"",...(sobresObj?{sobres:sobresObj}:{})};
+      const nova={id:Date.now(),codi_obra:"",licitacio:r.objecte||"",client:r.organisme||"",public_privat:"PUBLICA",poblacio:"",estat:"PROPOSTA",data_presentacio:r.termini_presentacio||"",termini:r.termini_execucio||"",import_pec_sense_iva:r.import_sense_iva||"",classificacio:(r.classificacio_requerida||[]).map(c=>`${c.grup}${c.subgrup} Cat.${c.categoria}`).join(" | "),criteris_puntuacio:[...(r.criteris_automatics||[]).map(c=>`${c.nom} ${c.punts}pt`),...(r.criteris_judici_valor||[]).map(c=>`${c.nom} ${c.punts}pt`)].join(" + "),tecnica:memoriaRequerida,aval:r.garantia_definitiva||"",apertura:"",comentaris:comentarisParts.join(" | "),link_obra:validPubUrl(r.enllac_publicacio),link_publicacio:"",analisi_completa:plecRawText||"",...(sobresObj?{sobres:sobresObj}:{})};
       if(isSupabaseConfigured()){await supabase.from("licitacions").upsert(nova);await supabase.from("licitacions_log").insert({licitacio_id:nova.id,estat_anterior:"",estat_nou:nova.estat||"PROPOSTA",codi_obra:nova.codi_obra||""});}
       else{let llista=[];try{const r=localStorage.getItem(SK);if(r)llista=JSON.parse(r);}catch(e){}llista=[nova,...llista];localStorage.setItem(SK,JSON.stringify(llista));}
       setGestorRefreshKey(k=>k+1);setPlecSavedMsg("✅ Guardat al Gestor!");setTimeout(()=>setPlecSavedMsg(""),3000);
@@ -2443,8 +2457,23 @@ INSTRUCCIONS D'EXTRACCIÓ — segueix aquest esquema:
       - Indica el perfil de soci necessari (quins grups/subgrups ha d'aportar)
       - Exemple: "Caldria un soci amb classificació I1 Cat.3 i J2 Cat.3 per cobrir instal·lacions"
 
-7. ENLLAÇ DE PUBLICACIÓ
-   - Si el document conté l'URL de publicació oficial (perfil del contractant, plataforma de contractació), inclou-lo al camp "enllac_publicacio" del JSON.
+7. ENLLAÇ DE PUBLICACIÓ — REGLA ESTRICTA
+   Cal l'URL ESPECÍFICA i COMPLETA de la fitxa de publicació d'AQUESTA licitació,
+   no el domini genèric. Busca a l'Anunci de publicació o al PCAP una adreça del
+   tipus:
+     ✅ CORRECTE: https://contractaciopublica.cat/ca/detall-publicacio/300776540
+     ✅ CORRECTE: https://contractaciopublica.cat/ca/detall-publicacio/pdf/f911714a-...
+     ✅ CORRECTE: qualsevol URL del perfil del contractant amb identificador propi
+        (p.ex. ...?idDoc=..., .../expedient/12345, etc.)
+   ❌ INCORRECTE i INÚTIL — NO ho posis mai:
+     - https://contractaciopublica.cat  (domini sol, sense ruta)
+     - https://contractaciopublica.cat/ca  (sense identificador)
+     - Qualsevol URL que no porti directament a la fitxa d'aquesta licitació
+   Si NO trobes una URL específica completa al document, deixa "enllac_publicacio": ""
+   (cadena buida). MAI posis el domini genèric com a substitut: és pitjor que
+   deixar-ho buit, perquè l'usuari pensa que té l'enllaç i no hi va.
+   Pista: l'URL sol aparèixer al peu de pàgina de l'Anunci de l'PSCP, sovint
+   tallada amb "..."; reconstrueix-la sencera si pots llegir l'identificador.
 
 Al FINAL del text, afegeix el JSON entre aquests marcadors exactes (sense backticks ni text extra).
 
@@ -2917,7 +2946,7 @@ ${informeText?`<div class="informe"><h2>📝 Informe complet de l'anàlisi</h2>$
               {(()=>{const memNec=(r.criteris_judici_valor||[]).some(c=>Number(c.punts||0)>0)||!!(r.requisits_memoria&&r.requisits_memoria.max_pagines);return <div className={`rounded-xl px-4 py-2.5 text-sm font-bold flex items-center gap-3 border ${memNec?"bg-blue-50 border-blue-300 text-blue-800":"bg-emerald-50 border-emerald-300 text-emerald-800"}`}><span className="text-lg">{memNec?"📝":"⚡"}</span><span>Memòria tècnica: {memNec?"SÍ — cal preparar-la":"NO — adjudicació 100% per criteris automàtics"}</span>{memNec&&r.requisits_memoria?.max_pagines&&<span className="ml-auto text-xs font-normal bg-blue-100 px-2 py-0.5 rounded">{r.requisits_memoria.max_pagines}</span>}</div>;})()}
               {r.lot&&<div className="bg-indigo-600 text-white rounded-xl px-4 py-2.5 font-bold text-sm flex items-center gap-2"><span className="bg-white/20 rounded-full px-2.5 py-0.5 text-xs">LOT {idx+1}</span>{r.lot}{r.objecte&&r.lot!==r.objecte&&<span className="font-normal opacity-80">— {r.objecte}</span>}</div>}
               <div className="bg-stone-50 rounded-xl border shadow-sm p-4"><h3 className="font-semibold text-gray-700 mb-3">📋 Dades bàsiques</h3>{r.termini_presentacio&&<div className="bg-red-50 border border-red-200 rounded-lg px-3 py-2 mb-3 flex items-center gap-2"><span className="text-red-600 text-lg">⏰</span><span className="text-sm font-bold text-red-800">Data presentació oferta: {r.termini_presentacio}</span></div>}<div className="grid grid-cols-2 gap-x-6 gap-y-2 text-xs">{[["Expedient",r.expedient],["Objecte",r.objecte],["Organisme",r.organisme],["CPV",r.cpv],["Import s/IVA",r.import_sense_iva?`${Number(r.import_sense_iva).toLocaleString("ca-ES")} €`:""],["Import c/IVA",r.import_amb_iva?`${Number(r.import_amb_iva).toLocaleString("ca-ES")} €`:""],["Valor estimat",r.valor_estimat?`${Number(r.valor_estimat).toLocaleString("ca-ES")} €`:""],["Termini execució",r.termini_execucio]].filter(([,v])=>v).map(([k,v])=>(<div key={k} className="flex gap-2"><span className="text-gray-400 shrink-0 w-36">{k}:</span><span className="font-medium text-gray-800">{v}</span></div>))}</div>
-                <div className="mt-3 flex items-center gap-2 text-xs"><span className="text-gray-400 shrink-0 w-36">🌐 Enllaç publicació:</span>{r.enllac_publicacio?<a href={r.enllac_publicacio} target="_blank" rel="noreferrer" className="text-blue-600 hover:underline truncate">{r.enllac_publicacio}</a>:<span className="text-gray-300">No detectat al PDF</span>}<input className="flex-1 border rounded px-2 py-1 text-xs" placeholder="Enganxa l'URL de la publicació" defaultValue={r.enllac_publicacio||""} onBlur={e=>{const updated=[...plecResults];updated[idx]={...r,enllac_publicacio:e.target.value};setPlecResults(updated);}}/></div>
+                <div className="mt-3 flex items-center gap-2 text-xs"><span className="text-gray-400 shrink-0 w-36">🌐 Enllaç publicació:</span>{(()=>{const pu=validPubUrl(r.enllac_publicacio);return pu?<a href={pu} target="_blank" rel="noreferrer" className="text-blue-600 hover:underline truncate">{pu}</a>:<span className="text-amber-600">⚠️ No detectat (enganxa l'URL específica)</span>;})()}<input className="flex-1 border rounded px-2 py-1 text-xs" placeholder="https://contractaciopublica.cat/ca/detall-publicacio/XXXXX" defaultValue={validPubUrl(r.enllac_publicacio)} onBlur={e=>{const updated=[...plecResults];updated[idx]={...r,enllac_publicacio:e.target.value};setPlecResults(updated);}}/></div>
               </div>
               <div className="bg-stone-50 rounded-xl border shadow-sm p-4"><h3 className="font-semibold text-gray-700 mb-3">🏆 Classificació i solvència (LCSP)</h3>
                 {r.exigeix_classificacio!==false&&r.classificacio_requerida?.length>0?(<>
