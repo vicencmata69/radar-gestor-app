@@ -7,5 +7,9 @@ import react from '@vitejs/plugin-react'
 export default defineConfig({
   plugins: [react()],
   base: '/',
-  server: { port: 5173, open: true }
+  // host:'127.0.0.1' força IPv4: evita que Vite escolti només a [::1] (IPv6),
+  // cosa que feia que Firefox (que resol localhost a 127.0.0.1) no s'hi
+  // pogués connectar. strictPort evita que salti al 5174 silenciosament:
+  // si el 5173 està ocupat, fallarà amb un error clar en comptes de canviar.
+  server: { host: '127.0.0.1', port: 5173, strictPort: true, open: true }
 })
