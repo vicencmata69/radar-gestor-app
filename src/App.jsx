@@ -3068,7 +3068,7 @@ ${informeText?`<div class="informe"><h2>📝 Informe complet de l'anàlisi</h2>$
       </div>}
       <div className="bg-stone-50 border-b shadow-sm">
         <div className="max-w-6xl mx-auto px-4 flex">
-          {[["calendari","📅 Calendari"],["filtres","⚙️ Criteris"],["resultats",`📋 Resultats${results.length?` (${results.length})`:""}`],["plecs","📄 Anàlisi Plecs"],["baixes","📉 Anàlisi de Baixes"],["gestio","📁 Gestió"]].map(([id,label])=>(
+          {[["filtres","⚙️ Criteris"],["resultats",`📋 Resultats${results.length?` (${results.length})`:""}`],["plecs","📄 Anàlisi Plecs"],["baixes","📉 Anàlisi de Baixes"],["gestio","📁 Gestió"],["calendari","📅 Calendari"]].map(([id,label])=>(
             <button key={id} onClick={()=>setActiveTab(id)} className={`py-3 px-5 font-medium border-b-2 transition-colors ${activeTab===id?"border-blue-700 text-blue-700":"border-transparent text-gray-500 hover:text-gray-700"}`}>{label}</button>
           ))}
         </div>
