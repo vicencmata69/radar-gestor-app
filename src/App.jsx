@@ -1515,7 +1515,13 @@ function BaixesTab(){
 - concurs: objecte/nom del contracte
 - organisme: òrgan de contractació
 - expedient: número d'expedient
-- import_licitacio: pressupost base de licitació SENSE IVA (número, sense símbols)
+- import_licitacio: ⚠️ CRÍTIC — pressupost base de licitació / tipus de licitació
+  / pressupost de sortida, SENSE IVA (número, sense símbols ni punts de milers).
+  Busca'l a fons: a les actes apareix com "Pressupost base de licitació", "Tipus
+  de licitació", "Pressupost de licitació (IVA exclòs)", "Valor estimat", "Import
+  de sortida" o similar. Si NOMÉS el trobes amb IVA, posa'l igualment i el
+  corregirà l'usuari. Si realment NO consta enlloc del document, posa 0 (l'usuari
+  l'introduirà manualment). NO el dedueixis ni l'inventis a partir de les ofertes.
 - data_acta: data de l'acta (DD/MM/YYYY)
 - tipologia: classifica entre EXACTAMENT un d'aquests valors: ${TIPOLOGIES_BAIXA.join(", ")}
 - te_tecnica: true/false. Indica si la licitació TÉ criteris sotmesos a judici de
@@ -1677,7 +1683,7 @@ Al final, ÚNICAMENT el JSON entre els marcadors exactes:
             <div><b>Organisme:</b> {preview.organisme||"—"}</div>
             <div><b>Expedient:</b> {preview.expedient||"—"}</div>
             <div><b>Tipologia:</b> <select value={preview.tipologia} onChange={e=>setPreview({...preview,tipologia:e.target.value})} className="border rounded px-1 text-xs">{TIPOLOGIES_BAIXA.map(t=><option key={t}>{t}</option>)}</select></div>
-            <div><b>Import licitació s/IVA:</b> {fmtE(preview.import_licitacio)}</div>
+            <div><b>Import licitació s/IVA:</b> <input type="number" step="0.01" value={preview.import_licitacio||""} placeholder="introdueix l'import" onChange={e=>{const imp=Number(e.target.value)||0;const calc=calcTemeritat(preview.ofertes,imp);setPreview({...preview,import_licitacio:imp,llindar_temeritat_pct:calc.llindarPct,nombre_licitadors:calc.nombre,ofertes:calc.ofertes});}} className={"border rounded px-2 py-0.5 text-xs w-40 "+(!preview.import_licitacio?"bg-amber-50 border-amber-400":"")}/> €{!preview.import_licitacio&&<span className="text-amber-600 text-xs ml-1">⚠️ cal per calcular baixes</span>}</div>
             <div><b>Data acta:</b> {preview.data_acta||"—"} · <b>{preview.nombre_licitadors}</b> licitadors</div>
             <div className="col-span-2"><b>Tipus d'adjudicació:</b> {preview.te_tecnica?<span className="px-2 py-0.5 rounded bg-purple-100 text-purple-800 font-semibold text-xs">📝 Amb puntuació tècnica</span>:<span className="px-2 py-0.5 rounded bg-emerald-100 text-emerald-800 font-semibold text-xs">⚡ Només econòmic (100% preu)</span>}</div>
             <div className="col-span-2"><b>Llindar temeritat (RGLCAP art.85, estimat):</b> {preview.llindar_temeritat_pct!=null?`baixa > ${preview.llindar_temeritat_pct}%`:"(relatiu / segons nº licitadors)"}</div>
@@ -1686,7 +1692,7 @@ Al final, ÚNICAMENT el JSON entre els marcadors exactes:
             <thead><tr className="bg-gray-100 text-gray-500"><th className="text-left px-2 py-1">Empresa</th><th className="px-2">Oferta s/IVA</th><th className="px-2">Baixa %</th><th className="px-2">Baixa €</th><th className="px-2">P.Tèc</th><th className="px-2">Estat</th></tr></thead>
             <tbody>{preview.ofertes.map((o,i)=>(<tr key={i} className={"border-t "+(o.es_servial?"bg-blue-50 font-semibold":"")}>
               <td className="px-2 py-1">{o.empresa||"—"}{o.es_servial?" ⭐":""}</td>
-              <td className="px-2 text-right">{fmtE(o.import_ofertat)}{o.amb_iva?" (c/IVA)":""}</td>
+              <td className="px-2 text-right"><input type="number" step="0.01" value={o.import_ofertat||""} placeholder="—" onChange={e=>{const ofs=preview.ofertes.map((x,xi)=>xi===i?{...x,import_ofertat:Number(e.target.value)||0}:x);const calc=calcTemeritat(ofs,preview.import_licitacio);setPreview({...preview,llindar_temeritat_pct:calc.llindarPct,nombre_licitadors:calc.nombre,ofertes:calc.ofertes});}} className="border rounded px-1 py-0.5 text-xs w-28 text-right"/>{o.amb_iva?" c/IVA":""}</td>
               <td className="px-2 text-right">{o.baixa_pct!=null?o.baixa_pct+"%":"—"}</td>
               <td className="px-2 text-right">{fmtE(o.baixa_abs)}</td>
               <td className="px-2 text-center">{o.puntuacio_tecnica??"—"}</td>
