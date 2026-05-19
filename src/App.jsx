@@ -1521,10 +1521,21 @@ function BaixesTab(){
    · empresa: nom fiscal exacte tal com surt a l'acta
    · import_ofertat: oferta econòmica SENSE IVA (número). Si l'acta dóna l'import amb IVA, indica'l igualment a import_ofertat i posa amb_iva:true
    · amb_iva: true/false (si l'import que has posat inclou IVA)
-   · puntuacio_tecnica: punts del sobre tècnic si l'acta els recull (número o null)
-   · puntuacio_total: punts totals si hi consten (número o null)
+   · puntuacio_tecnica: ⚠️ DADA CLAU — punts obtinguts als criteris sotmesos a
+     judici de valor / memòria tècnica (sobre 2 o sobre B). Busca'ls a fons: a
+     les actes solen aparèixer en una taula tipus "Valoració criteris no
+     automàtics", "Puntuació tècnica", "Sobre 2", "Criteris judici de valor" o
+     similar. Posa el número exacte d'aquesta empresa (pot tenir decimals). Si
+     l'acta NO recull cap puntuació tècnica per a cap empresa, posa null. Però
+     si n'hi ha per a unes empreses i no per a altres, omple les que hi siguin.
+   · puntuacio_total: punts totals (tècnica + econòmica) si hi consten (número o null)
    · adjudicatari: true si l'acta proposa aquesta empresa com a adjudicatària, sinó false
 Si l'acta proposa adjudicatari, marca'l. Si exclou alguna oferta per temeritat o documentació, posa-ho a "observacions" de l'oferta.
+IMPORTANT sobre la puntuació tècnica: serveix per avaluar com de generós o
+exigent és cada organisme puntuant memòries tècniques i com tracta cada empresa.
+Per tant és tan rellevant com l'import: no l'ometis si apareix al document,
+encara que l'acta sigui només d'obertura de sobre econòmic amb la valoració
+tècnica annexada o referida d'una sessió anterior.
 
 Al final, ÚNICAMENT el JSON entre els marcadors exactes:
 --JSON_INICI--
@@ -1587,22 +1598,29 @@ Al final, ÚNICAMENT el JSON entre els marcadors exactes:
     const base=actes.filter(a=>(!oOrg||a.organisme===oOrg)&&(!oTip||a.tipologia===oTip)&&(!oImp||(Number(a.import_licitacio)>=Number(oImp)*0.75&&Number(a.import_licitacio)<=Number(oImp)*1.25)));
     if(!base.length)return{cap:true};
     const baixesAdj=[];const totsLicitadors=[];
+    const ptecTotes=[],ptecServial=[];
     base.forEach(a=>{
       totsLicitadors.push((a.ofertes||[]).length);
       const adj=(a.ofertes||[]).find(o=>o.adjudicatari)||(a.ofertes||[]).filter(o=>!o.temeraria&&o.baixa_pct!=null).sort((x,y)=>y.baixa_pct-x.baixa_pct)[0];
       if(adj&&adj.baixa_pct!=null)baixesAdj.push(adj.baixa_pct);
+      (a.ofertes||[]).forEach(o=>{
+        const pt=Number(o.puntuacio_tecnica);
+        if(!isNaN(pt)&&o.puntuacio_tecnica!=null){ptecTotes.push(pt);if(o.es_servial)ptecServial.push(pt);}
+      });
     });
     baixesAdj.sort((a,b)=>a-b);
     const avg=baixesAdj.length?baixesAdj.reduce((a,b)=>a+b,0)/baixesAdj.length:0;
     const med=baixesAdj.length?baixesAdj[Math.floor(baixesAdj.length/2)]:0;
     const min=baixesAdj.length?baixesAdj[0]:0,max=baixesAdj.length?baixesAdj[baixesAdj.length-1]:0;
     const avgLic=totsLicitadors.length?totsLicitadors.reduce((a,b)=>a+b,0)/totsLicitadors.length:0;
+    const avgPtec=ptecTotes.length?ptecTotes.reduce((a,b)=>a+b,0)/ptecTotes.length:null;
+    const avgPtecServial=ptecServial.length?ptecServial.reduce((a,b)=>a+b,0)/ptecServial.length:null;
     let perfil="";
     if(avg>=15)perfil="🔥 Organisme de baixes ALTES — molt competitiu";
     else if(avg>=7)perfil="⚖️ Baixes MODERADES";
     else if(avg>0)perfil="🟢 Baixes CONTINGUDES — poc agressiu";
     else perfil="ℹ️ Dades insuficients";
-    return{n:base.length,avg,med,min,max,avgLic,perfil,
+    return{n:base.length,avg,med,min,max,avgLic,perfil,avgPtec,avgPtecServial,
       suggerida:avg>0?`${(avg-1).toFixed(1)}% – ${(avg+1.5).toFixed(1)}%`:"—"};
   })();
 
@@ -1612,14 +1630,16 @@ Al final, ÚNICAMENT el JSON entre els marcadors exactes:
     actes.forEach(a=>{(a.ofertes||[]).forEach(o=>{
       if(!o.empresa)return;
       const k=o.empresa;
-      if(!map[k])map[k]={empresa:k,concursos:0,orgs:new Set(),baixes:[],temeraries:0,adjudicades:0};
+      if(!map[k])map[k]={empresa:k,concursos:0,orgs:new Set(),baixes:[],ptec:[],temeraries:0,adjudicades:0};
       map[k].concursos++;map[k].orgs.add(a.organisme);
       if(o.baixa_pct!=null)map[k].baixes.push(o.baixa_pct);
+      const pt=Number(o.puntuacio_tecnica);if(!isNaN(pt)&&o.puntuacio_tecnica!=null)map[k].ptec.push(pt);
       if(o.temeraria)map[k].temeraries++;
       if(o.adjudicatari)map[k].adjudicades++;
     });});
     return Object.values(map).map(c=>({...c,orgsN:c.orgs.size,
-      baixaMitjana:c.baixes.length?(c.baixes.reduce((a,b)=>a+b,0)/c.baixes.length):0}))
+      baixaMitjana:c.baixes.length?(c.baixes.reduce((a,b)=>a+b,0)/c.baixes.length):0,
+      ptecMitjana:c.ptec.length?(c.ptec.reduce((a,b)=>a+b,0)/c.ptec.length):null}))
       .sort((a,b)=>b.concursos-a.concursos);
   })();
 
@@ -1695,12 +1715,13 @@ Al final, ÚNICAMENT el JSON entre els marcadors exactes:
         </div>
         {competidors.length>0&&<div className="bg-stone-50 border rounded-xl p-3">
           <h3 className="text-sm font-bold text-gray-700 mb-2">🏢 Intel·ligència de competidors</h3>
-          <table className="w-full text-xs"><thead><tr className="bg-gray-100 text-gray-500"><th className="text-left px-2 py-1">Empresa</th><th className="px-2">Concursos</th><th className="px-2">Organismes</th><th className="px-2">Baixa mitjana</th><th className="px-2">Temeràries</th><th className="px-2">Adjudicades</th></tr></thead>
+          <table className="w-full text-xs"><thead><tr className="bg-gray-100 text-gray-500"><th className="text-left px-2 py-1">Empresa</th><th className="px-2">Concursos</th><th className="px-2">Organismes</th><th className="px-2">Baixa mitjana</th><th className="px-2">P.Tèc mitjana</th><th className="px-2">Temeràries</th><th className="px-2">Adjudicades</th></tr></thead>
           <tbody>{competidors.slice(0,30).map((c,i)=>(<tr key={i} className={"border-t "+(esServialNom(c.empresa)?"bg-blue-50 font-semibold":"")}>
             <td className="px-2 py-1">{c.empresa}{esServialNom(c.empresa)?" ⭐":""}</td>
             <td className="px-2 text-center">{c.concursos}</td>
             <td className="px-2 text-center">{c.orgsN}</td>
             <td className="px-2 text-center">{c.baixaMitjana.toFixed(1)}%</td>
+            <td className="px-2 text-center">{c.ptecMitjana!=null?c.ptecMitjana.toFixed(1):"—"}</td>
             <td className="px-2 text-center">{c.temeraries||"—"}</td>
             <td className="px-2 text-center">{c.adjudicades||"—"}</td>
           </tr>))}</tbody></table>
@@ -1716,11 +1737,12 @@ Al final, ÚNICAMENT el JSON entre els marcadors exactes:
         {orientacio&&orientacio.cap&&<div className="bg-amber-50 border border-amber-300 rounded-xl p-4 text-sm text-amber-800">No hi ha actes a la base de dades que coincideixin amb aquests criteris. A mesura que pugis més actes, l'orientador serà més fiable.</div>}
         {orientacio&&!orientacio.cap&&<div className="bg-stone-50 border-2 border-blue-200 rounded-xl p-5 space-y-3">
           <div className="text-base font-bold text-gray-900">{orientacio.perfil}</div>
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-center">
+          <div className="grid grid-cols-2 md:grid-cols-5 gap-3 text-center">
             <div className="bg-blue-50 rounded-lg p-3"><div className="text-2xl font-bold text-blue-700">{orientacio.avg.toFixed(1)}%</div><div className="text-xs text-gray-500">Baixa adj. mitjana</div></div>
             <div className="bg-gray-50 rounded-lg p-3"><div className="text-2xl font-bold">{orientacio.med.toFixed(1)}%</div><div className="text-xs text-gray-500">Mediana</div></div>
-            <div className="bg-gray-50 rounded-lg p-3"><div className="text-lg font-bold">{orientacio.min.toFixed(1)}–{orientacio.max.toFixed(1)}%</div><div className="text-xs text-gray-500">Rang</div></div>
+            <div className="bg-gray-50 rounded-lg p-3"><div className="text-lg font-bold">{orientacio.min.toFixed(1)}–{orientacio.max.toFixed(1)}%</div><div className="text-xs text-gray-500">Rang baixa</div></div>
             <div className="bg-gray-50 rounded-lg p-3"><div className="text-2xl font-bold">{orientacio.avgLic.toFixed(1)}</div><div className="text-xs text-gray-500">Licitadors mitjana</div></div>
+            <div className="bg-purple-50 rounded-lg p-3"><div className="text-2xl font-bold text-purple-700">{orientacio.avgPtec!=null?orientacio.avgPtec.toFixed(1):"—"}</div><div className="text-xs text-gray-500">P.Tèc mitjana organisme{orientacio.avgPtecServial!=null?` · Servial ${orientacio.avgPtecServial.toFixed(1)}`:""}</div></div>
           </div>
           <div className="bg-green-50 border border-green-300 rounded-lg p-4">
             <div className="text-sm text-gray-600">💡 Baixa competitiva orientativa (decisió teva):</div>
