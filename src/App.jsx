@@ -331,6 +331,48 @@ function validPubUrl(u){
     return s;
   }catch(e){return"";}
 }
+// Càlcul de baixes temeràries / ofertes anormalment baixes segons la fórmula
+// estàndard RGLCAP art. 85 (RD 1098/2001). ÉS UNA ESTIMACIÓ: el PCAP concret
+// pot definir-ne una altra. Retorna les ofertes amb camp `temeraria` i el
+// llindar de baixa (%) a partir del qual es considera temerària (quan aplica).
+function calcTemeritat(ofertes, importLic){
+  const out = (ofertes||[]).map(o => ({...o}));
+  const imp = importLic && Number(importLic) > 0 ? Number(importLic) : 0;
+  const valid = out.filter(o => Number(o.import_ofertat) > 0);
+  const n = valid.length;
+  const baixaPct = o => imp ? (imp - Number(o.import_ofertat)) / imp * 100 : 0;
+  out.forEach(o => { o.baixa_pct = imp && Number(o.import_ofertat)>0 ? Math.round(baixaPct(o)*100)/100 : null;
+                      o.baixa_abs = imp && Number(o.import_ofertat)>0 ? Math.round((imp-Number(o.import_ofertat))*100)/100 : null;
+                      o.temeraria = false; });
+  let llindar = null;
+  if (n === 0 || !imp) return { ofertes: out, llindarPct: null, nombre: n };
+  if (n === 1) {
+    llindar = 25;
+    valid.forEach(o => { const r=out.find(x=>x===o)||out.find(x=>x.empresa===o.empresa); if(r) r.temeraria = baixaPct(o) > 25; });
+  } else if (n === 2) {
+    valid.forEach(o => {
+      const others = valid.filter(x => x !== o).map(baixaPct);
+      const maxOther = Math.max(...others);
+      const r = out.find(x=>x===o)||out.find(x=>x.empresa===o.empresa);
+      if (r) r.temeraria = baixaPct(o) > maxOther + 20;
+    });
+  } else {
+    // 3 o més: mitjana de baixes; recàlcul si hi ha ofertes amb baixa molt
+    // inferior a la mitjana (preu alt) en més de 10 punts.
+    let bs = valid.map(baixaPct);
+    let media = bs.reduce((a,b)=>a+b,0) / bs.length;
+    const aberrants = valid.filter(o => baixaPct(o) < media - 10);
+    if (aberrants.length) {
+      let restants = valid.filter(o => baixaPct(o) >= media - 10);
+      if (restants.length < 3) restants = [...valid].sort((a,b)=>Number(a.import_ofertat)-Number(b.import_ofertat)).slice(0,3);
+      const bs2 = restants.map(baixaPct);
+      media = bs2.reduce((a,b)=>a+b,0) / bs2.length;
+    }
+    llindar = Math.round((media + 10) * 100) / 100;
+    valid.forEach(o => { const r = out.find(x=>x===o)||out.find(x=>x.empresa===o.empresa); if (r) r.temeraria = baixaPct(o) > media + 10; });
+  }
+  return { ofertes: out, llindarPct: llindar, nombre: n };
+}
 // Formata visita_obra de manera segura: accepta tant el format antic (string,
 // p.ex. "No") com el nou (objecte {obligatoria,data,lloc,observacions}).
 // SEMPRE retorna un string — mai un objecte — per no petar el render de React.
@@ -1417,6 +1459,293 @@ function CalendariTab(){
           </div>
         </div>
       )}
+    </div>
+  );
+}
+
+// ============================================================================
+// ANÀLISI DE BAIXES — actes d'obertura → base de dades d'intel·ligència
+// ============================================================================
+const TIPOLOGIES_BAIXA = ["Edificació","Rehabilitació","Urbanització","Esportiu","Educatiu","Sanitari","Instal·lacions","Hidràuliques","Altres"];
+const esServialNom = s => /servial/i.test(String(s||""));
+
+function BaixesTab(){
+  const [actes,setActes]=useState([]);
+  const [sub,setSub]=useState("db"); // db | upload | orientador
+  const [files,setFiles]=useState([]);
+  const [loading,setLoading]=useState(false);
+  const [status,setStatus]=useState("");
+  const [errMsg,setErrMsg]=useState("");
+  const [preview,setPreview]=useState(null); // resultat IA pendent de desar
+  const [aiProvider]=useState(()=>getAiProvider());
+  // Filtres de la base de dades
+  const [fOrg,setFOrg]=useState("");
+  const [fTip,setFTip]=useState("");
+  const [fEmpresa,setFEmpresa]=useState("");
+  const [fImpMin,setFImpMin]=useState("");
+  const [fImpMax,setFImpMax]=useState("");
+  const [sel,setSel]=useState(null);
+  // Orientador
+  const [oOrg,setOOrg]=useState("");
+  const [oTip,setOTip]=useState("");
+  const [oImp,setOImp]=useState("");
+
+  useEffect(()=>{
+    if(!isSupabaseConfigured())return;
+    (async()=>{try{const{data}=await supabase.from("actes_obertura").select("*").order("created_at",{ascending:false});if(data)setActes(data);}catch(e){}})();
+    const ch=supabase.channel("actes-obertura-rt")
+      .on("postgres_changes",{event:"*",schema:"public",table:"actes_obertura"},p=>{
+        if(p.eventType==="INSERT")setActes(prev=>[p.new,...prev.filter(a=>a.id!==p.new.id)]);
+        else if(p.eventType==="UPDATE")setActes(prev=>prev.map(a=>a.id===p.new.id?{...a,...p.new}:a));
+        else if(p.eventType==="DELETE")setActes(prev=>prev.filter(a=>a.id!==p.old.id));
+      }).subscribe();
+    return()=>{supabase.removeChannel(ch);};
+  },[]);
+
+  const analitzar=async()=>{
+    if(!files.length){setErrMsg("Afegeix almenys un PDF d'acta d'obertura.");return;}
+    setLoading(true);setErrMsg("");setPreview(null);setStatus("Llegint PDF…");
+    try{
+      const f=files[0];
+      const buf=await new Promise((res,rej)=>{const r=new FileReader();r.onload=()=>res(r.result);r.onerror=()=>rej(new Error("No s'ha pogut llegir el PDF"));r.readAsArrayBuffer(f);});
+      const b64=btoa(new Uint8Array(buf).reduce((s,b)=>s+String.fromCharCode(b),""));
+      const SYS=`Ets un expert en contractació pública espanyola. Analitzes ACTES D'OBERTURA de licitacions d'obres i extreus dades econòmiques amb precisió absoluta. Mai inventes xifres: si no apareixen al document, deixa-les a 0 o buides.`;
+      const PROMPT=`Aquest PDF és una ACTA D'OBERTURA (o acta de la mesa de contractació) d'una licitació d'obres. Extreu:
+- concurs: objecte/nom del contracte
+- organisme: òrgan de contractació
+- expedient: número d'expedient
+- import_licitacio: pressupost base de licitació SENSE IVA (número, sense símbols)
+- data_acta: data de l'acta (DD/MM/YYYY)
+- tipologia: classifica entre EXACTAMENT un d'aquests valors: ${TIPOLOGIES_BAIXA.join(", ")}
+- ofertes: array amb TOTES les empreses presentades. Per cada una:
+   · empresa: nom fiscal exacte tal com surt a l'acta
+   · import_ofertat: oferta econòmica SENSE IVA (número). Si l'acta dóna l'import amb IVA, indica'l igualment a import_ofertat i posa amb_iva:true
+   · amb_iva: true/false (si l'import que has posat inclou IVA)
+   · puntuacio_tecnica: punts del sobre tècnic si l'acta els recull (número o null)
+   · puntuacio_total: punts totals si hi consten (número o null)
+   · adjudicatari: true si l'acta proposa aquesta empresa com a adjudicatària, sinó false
+Si l'acta proposa adjudicatari, marca'l. Si exclou alguna oferta per temeritat o documentació, posa-ho a "observacions" de l'oferta.
+
+Al final, ÚNICAMENT el JSON entre els marcadors exactes:
+--JSON_INICI--
+{"concurs":"","organisme":"","expedient":"","import_licitacio":0,"data_acta":"","tipologia":"Altres","ofertes":[{"empresa":"","import_ofertat":0,"amb_iva":false,"puntuacio_tecnica":null,"puntuacio_total":null,"adjudicatari":false,"observacions":""}]}
+--JSON_FI--`;
+      setStatus(`Analitzant amb ${aiProvider==="claude"?"Claude":"Gemini"}…`);
+      const raw=await callAI(SYS,[{type:"document",source:{type:"base64",media_type:"application/pdf",data:b64}},{type:"text",text:PROMPT}],8000,aiProvider);
+      if(!raw)throw new Error("La IA no ha retornat resposta.");
+      const m=raw.match(/--JSON_INICI--([\s\S]*?)--JSON_FI--/);
+      const parsed=parseJSONLenient(m?m[1]:raw);
+      if(!parsed||!parsed.ofertes)throw new Error("No s'ha pogut extreure el JSON de l'acta. Revisa el PDF.");
+      const importLic=Number(parsed.import_licitacio)||0;
+      const calc=calcTemeritat((parsed.ofertes||[]).map(o=>({...o,import_ofertat:Number(o.import_ofertat)||0,es_servial:esServialNom(o.empresa)})),importLic);
+      setPreview({
+        id:Date.now(),
+        concurs:parsed.concurs||"",organisme:parsed.organisme||"",expedient:parsed.expedient||"",
+        tipologia:TIPOLOGIES_BAIXA.includes(parsed.tipologia)?parsed.tipologia:"Altres",
+        import_licitacio:importLic,data_acta:parsed.data_acta||"",
+        nombre_licitadors:calc.nombre,llindar_temeritat_pct:calc.llindarPct,
+        ofertes:calc.ofertes.sort((a,b)=>(b.baixa_pct||0)-(a.baixa_pct||0)),
+        raw_text:raw
+      });
+      setStatus("");
+    }catch(e){setErrMsg("Error: "+e.message);setStatus("");}
+    finally{setLoading(false);}
+  };
+
+  const desar=async()=>{
+    if(!preview)return;
+    try{
+      const row={...preview};delete row.__local;
+      if(isSupabaseConfigured())await supabase.from("actes_obertura").upsert(row);
+      setActes(prev=>[row,...prev.filter(a=>a.id!==row.id)]);
+      setPreview(null);setFiles([]);setSub("db");
+    }catch(e){setErrMsg("Error en desar: "+e.message);}
+  };
+  const eliminar=async id=>{
+    if(!confirm("Eliminar aquesta acta de la base de dades?"))return;
+    if(isSupabaseConfigured())await supabase.from("actes_obertura").delete().eq("id",id);
+    setActes(prev=>prev.filter(a=>a.id!==id));setSel(null);
+  };
+
+  const fmtE=n=>{const v=Number(n);return isNaN(v)||!v?"—":v.toLocaleString("ca-ES",{minimumFractionDigits:2,maximumFractionDigits:2})+" €";};
+  const organismes=[...new Set(actes.map(a=>a.organisme).filter(Boolean))].sort();
+  const empreses=[...new Set(actes.flatMap(a=>(a.ofertes||[]).map(o=>o.empresa)).filter(Boolean))].sort();
+
+  const filtered=actes.filter(a=>{
+    if(fOrg&&a.organisme!==fOrg)return false;
+    if(fTip&&a.tipologia!==fTip)return false;
+    if(fEmpresa&&!(a.ofertes||[]).some(o=>o.empresa===fEmpresa))return false;
+    const imp=Number(a.import_licitacio)||0;
+    if(fImpMin&&imp<Number(fImpMin))return false;
+    if(fImpMax&&imp>Number(fImpMax))return false;
+    return true;
+  });
+
+  // Estadístiques de l'orientador
+  const orientacio=(()=>{
+    if(!oOrg&&!oTip)return null;
+    const base=actes.filter(a=>(!oOrg||a.organisme===oOrg)&&(!oTip||a.tipologia===oTip)&&(!oImp||(Number(a.import_licitacio)>=Number(oImp)*0.75&&Number(a.import_licitacio)<=Number(oImp)*1.25)));
+    if(!base.length)return{cap:true};
+    const baixesAdj=[];const totsLicitadors=[];
+    base.forEach(a=>{
+      totsLicitadors.push((a.ofertes||[]).length);
+      const adj=(a.ofertes||[]).find(o=>o.adjudicatari)||(a.ofertes||[]).filter(o=>!o.temeraria&&o.baixa_pct!=null).sort((x,y)=>y.baixa_pct-x.baixa_pct)[0];
+      if(adj&&adj.baixa_pct!=null)baixesAdj.push(adj.baixa_pct);
+    });
+    baixesAdj.sort((a,b)=>a-b);
+    const avg=baixesAdj.length?baixesAdj.reduce((a,b)=>a+b,0)/baixesAdj.length:0;
+    const med=baixesAdj.length?baixesAdj[Math.floor(baixesAdj.length/2)]:0;
+    const min=baixesAdj.length?baixesAdj[0]:0,max=baixesAdj.length?baixesAdj[baixesAdj.length-1]:0;
+    const avgLic=totsLicitadors.length?totsLicitadors.reduce((a,b)=>a+b,0)/totsLicitadors.length:0;
+    let perfil="";
+    if(avg>=15)perfil="🔥 Organisme de baixes ALTES — molt competitiu";
+    else if(avg>=7)perfil="⚖️ Baixes MODERADES";
+    else if(avg>0)perfil="🟢 Baixes CONTINGUDES — poc agressiu";
+    else perfil="ℹ️ Dades insuficients";
+    return{n:base.length,avg,med,min,max,avgLic,perfil,
+      suggerida:avg>0?`${(avg-1).toFixed(1)}% – ${(avg+1.5).toFixed(1)}%`:"—"};
+  })();
+
+  // Intel·ligència de competidors
+  const competidors=(()=>{
+    const map={};
+    actes.forEach(a=>{(a.ofertes||[]).forEach(o=>{
+      if(!o.empresa)return;
+      const k=o.empresa;
+      if(!map[k])map[k]={empresa:k,concursos:0,orgs:new Set(),baixes:[],temeraries:0,adjudicades:0};
+      map[k].concursos++;map[k].orgs.add(a.organisme);
+      if(o.baixa_pct!=null)map[k].baixes.push(o.baixa_pct);
+      if(o.temeraria)map[k].temeraries++;
+      if(o.adjudicatari)map[k].adjudicades++;
+    });});
+    return Object.values(map).map(c=>({...c,orgsN:c.orgs.size,
+      baixaMitjana:c.baixes.length?(c.baixes.reduce((a,b)=>a+b,0)/c.baixes.length):0}))
+      .sort((a,b)=>b.concursos-a.concursos);
+  })();
+
+  return(
+    <div className="max-w-[1700px] mx-auto px-6 py-5 space-y-4">
+      <div className="flex items-center justify-between flex-wrap gap-3">
+        <h2 className="text-xl font-bold text-gray-900">📉 Anàlisi de Baixes</h2>
+        <div className="flex gap-1">
+          {[["db","🗂️ Base de dades"],["upload","📥 Pujar acta"],["orientador","🎯 Orientador"]].map(([id,l])=>(
+            <button key={id} onClick={()=>setSub(id)} className={`px-3 py-1.5 rounded-lg text-sm font-semibold ${sub===id?"bg-blue-600 text-white":"bg-stone-100 text-gray-600 hover:bg-stone-200"}`}>{l}</button>
+          ))}
+        </div>
+      </div>
+
+      {sub==="upload"&&<div className="space-y-3">
+        <div className="bg-stone-50 border rounded-xl p-4">
+          <input type="file" accept=".pdf,application/pdf" onChange={e=>{setFiles(Array.from(e.target.files||[]));setPreview(null);setErrMsg("");}} className="text-sm"/>
+          <button onClick={analitzar} disabled={loading||!files.length} className="ml-3 px-4 py-2 bg-blue-600 hover:bg-blue-700 disabled:opacity-40 text-white text-sm font-semibold rounded-lg">{loading?"Analitzant…":"🔍 Analitzar acta"}</button>
+          {status&&<span className="ml-3 text-xs text-blue-600">{status}</span>}
+          {errMsg&&<div className="mt-2 text-xs text-red-600">{errMsg}</div>}
+        </div>
+        {preview&&<div className="bg-stone-50 border-2 border-blue-200 rounded-xl p-4 space-y-3">
+          <div className="grid grid-cols-2 gap-2 text-sm">
+            <div><b>Concurs:</b> {preview.concurs||"—"}</div>
+            <div><b>Organisme:</b> {preview.organisme||"—"}</div>
+            <div><b>Expedient:</b> {preview.expedient||"—"}</div>
+            <div><b>Tipologia:</b> <select value={preview.tipologia} onChange={e=>setPreview({...preview,tipologia:e.target.value})} className="border rounded px-1 text-xs">{TIPOLOGIES_BAIXA.map(t=><option key={t}>{t}</option>)}</select></div>
+            <div><b>Import licitació s/IVA:</b> {fmtE(preview.import_licitacio)}</div>
+            <div><b>Data acta:</b> {preview.data_acta||"—"} · <b>{preview.nombre_licitadors}</b> licitadors</div>
+            <div className="col-span-2"><b>Llindar temeritat (RGLCAP art.85, estimat):</b> {preview.llindar_temeritat_pct!=null?`baixa > ${preview.llindar_temeritat_pct}%`:"(relatiu / segons nº licitadors)"}</div>
+          </div>
+          <table className="w-full text-xs">
+            <thead><tr className="bg-gray-100 text-gray-500"><th className="text-left px-2 py-1">Empresa</th><th className="px-2">Oferta s/IVA</th><th className="px-2">Baixa %</th><th className="px-2">Baixa €</th><th className="px-2">P.Tèc</th><th className="px-2">Estat</th></tr></thead>
+            <tbody>{preview.ofertes.map((o,i)=>(<tr key={i} className={"border-t "+(o.es_servial?"bg-blue-50 font-semibold":"")}>
+              <td className="px-2 py-1">{o.empresa||"—"}{o.es_servial?" ⭐":""}</td>
+              <td className="px-2 text-right">{fmtE(o.import_ofertat)}{o.amb_iva?" (c/IVA)":""}</td>
+              <td className="px-2 text-right">{o.baixa_pct!=null?o.baixa_pct+"%":"—"}</td>
+              <td className="px-2 text-right">{fmtE(o.baixa_abs)}</td>
+              <td className="px-2 text-center">{o.puntuacio_tecnica??"—"}</td>
+              <td className="px-2 text-center">{o.adjudicatari?"🏆 Adj.":""}{o.temeraria?" ⚠️ Temerària":""}</td>
+            </tr>))}</tbody>
+          </table>
+          <div className="flex gap-2"><button onClick={desar} className="px-4 py-2 bg-green-600 hover:bg-green-700 text-white text-sm font-bold rounded-lg">💾 Desar a la base de dades</button><button onClick={()=>setPreview(null)} className="px-4 py-2 border rounded-lg text-sm">Descartar</button></div>
+        </div>}
+      </div>}
+
+      {sub==="db"&&<div className="space-y-3">
+        <div className="bg-stone-50 border rounded-xl p-3 flex flex-wrap gap-2 items-center text-xs">
+          <select value={fOrg} onChange={e=>setFOrg(e.target.value)} className="border rounded px-2 py-1"><option value="">Tots els organismes</option>{organismes.map(o=><option key={o}>{o}</option>)}</select>
+          <select value={fTip} onChange={e=>setFTip(e.target.value)} className="border rounded px-2 py-1"><option value="">Totes tipologies</option>{TIPOLOGIES_BAIXA.map(t=><option key={t}>{t}</option>)}</select>
+          <select value={fEmpresa} onChange={e=>setFEmpresa(e.target.value)} className="border rounded px-2 py-1"><option value="">Totes les empreses</option>{empreses.map(em=><option key={em}>{em}</option>)}</select>
+          <input type="number" placeholder="Import mín." value={fImpMin} onChange={e=>setFImpMin(e.target.value)} className="border rounded px-2 py-1 w-28"/>
+          <input type="number" placeholder="Import màx." value={fImpMax} onChange={e=>setFImpMax(e.target.value)} className="border rounded px-2 py-1 w-28"/>
+          {(fOrg||fTip||fEmpresa||fImpMin||fImpMax)&&<button onClick={()=>{setFOrg("");setFTip("");setFEmpresa("");setFImpMin("");setFImpMax("");}} className="text-red-500 hover:underline">Netejar</button>}
+          <span className="ml-auto text-gray-400">{filtered.length} actes</span>
+        </div>
+        <div className="bg-stone-50 border rounded-xl overflow-x-auto">
+          <table className="w-full text-xs">
+            <thead><tr className="bg-gray-100 text-gray-500"><th className="text-left px-2 py-2">Concurs</th><th className="text-left px-2">Organisme</th><th className="px-2">Tipus</th><th className="px-2">Import s/IVA</th><th className="px-2">Licit.</th><th className="px-2">Baixa adj.</th><th className="px-2">Llindar tem.</th><th className="px-2"></th></tr></thead>
+            <tbody>{filtered.map(a=>{const adj=(a.ofertes||[]).find(o=>o.adjudicatari)||(a.ofertes||[]).filter(o=>!o.temeraria&&o.baixa_pct!=null).sort((x,y)=>y.baixa_pct-x.baixa_pct)[0];return(
+              <tr key={a.id} className="border-t hover:bg-gray-50 cursor-pointer" onClick={()=>setSel(a)}>
+                <td className="px-2 py-1.5 max-w-xs truncate" title={a.concurs}>{a.concurs||"—"}</td>
+                <td className="px-2">{a.organisme||"—"}</td>
+                <td className="px-2 text-center">{a.tipologia||"—"}</td>
+                <td className="px-2 text-right">{fmtE(a.import_licitacio)}</td>
+                <td className="px-2 text-center">{(a.ofertes||[]).length}</td>
+                <td className="px-2 text-right font-semibold text-green-700">{adj&&adj.baixa_pct!=null?adj.baixa_pct+"%":"—"}</td>
+                <td className="px-2 text-center text-gray-500">{a.llindar_temeritat_pct!=null?">"+a.llindar_temeritat_pct+"%":"rel."}</td>
+                <td className="px-2 text-center"><button onClick={e=>{e.stopPropagation();eliminar(a.id);}} className="text-red-400 hover:text-red-600">🗑️</button></td>
+              </tr>);})}</tbody>
+          </table>
+          {filtered.length===0&&<div className="text-center py-10 text-gray-400 text-sm">Cap acta. Puja la primera des de "📥 Pujar acta".</div>}
+        </div>
+        {competidors.length>0&&<div className="bg-stone-50 border rounded-xl p-3">
+          <h3 className="text-sm font-bold text-gray-700 mb-2">🏢 Intel·ligència de competidors</h3>
+          <table className="w-full text-xs"><thead><tr className="bg-gray-100 text-gray-500"><th className="text-left px-2 py-1">Empresa</th><th className="px-2">Concursos</th><th className="px-2">Organismes</th><th className="px-2">Baixa mitjana</th><th className="px-2">Temeràries</th><th className="px-2">Adjudicades</th></tr></thead>
+          <tbody>{competidors.slice(0,30).map((c,i)=>(<tr key={i} className={"border-t "+(esServialNom(c.empresa)?"bg-blue-50 font-semibold":"")}>
+            <td className="px-2 py-1">{c.empresa}{esServialNom(c.empresa)?" ⭐":""}</td>
+            <td className="px-2 text-center">{c.concursos}</td>
+            <td className="px-2 text-center">{c.orgsN}</td>
+            <td className="px-2 text-center">{c.baixaMitjana.toFixed(1)}%</td>
+            <td className="px-2 text-center">{c.temeraries||"—"}</td>
+            <td className="px-2 text-center">{c.adjudicades||"—"}</td>
+          </tr>))}</tbody></table>
+        </div>}
+      </div>}
+
+      {sub==="orientador"&&<div className="space-y-3">
+        <div className="bg-stone-50 border rounded-xl p-4 flex flex-wrap gap-3 items-end text-sm">
+          <div><label className="text-xs text-gray-500 block">Organisme</label><select value={oOrg} onChange={e=>setOOrg(e.target.value)} className="border rounded px-2 py-1 text-xs"><option value="">— qualsevol —</option>{organismes.map(o=><option key={o}>{o}</option>)}</select></div>
+          <div><label className="text-xs text-gray-500 block">Tipologia</label><select value={oTip} onChange={e=>setOTip(e.target.value)} className="border rounded px-2 py-1 text-xs"><option value="">— qualsevol —</option>{TIPOLOGIES_BAIXA.map(t=><option key={t}>{t}</option>)}</select></div>
+          <div><label className="text-xs text-gray-500 block">Import licitació (€)</label><input type="number" value={oImp} onChange={e=>setOImp(e.target.value)} className="border rounded px-2 py-1 text-xs w-36"/></div>
+        </div>
+        {orientacio&&orientacio.cap&&<div className="bg-amber-50 border border-amber-300 rounded-xl p-4 text-sm text-amber-800">No hi ha actes a la base de dades que coincideixin amb aquests criteris. A mesura que pugis més actes, l'orientador serà més fiable.</div>}
+        {orientacio&&!orientacio.cap&&<div className="bg-stone-50 border-2 border-blue-200 rounded-xl p-5 space-y-3">
+          <div className="text-base font-bold text-gray-900">{orientacio.perfil}</div>
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-center">
+            <div className="bg-blue-50 rounded-lg p-3"><div className="text-2xl font-bold text-blue-700">{orientacio.avg.toFixed(1)}%</div><div className="text-xs text-gray-500">Baixa adj. mitjana</div></div>
+            <div className="bg-gray-50 rounded-lg p-3"><div className="text-2xl font-bold">{orientacio.med.toFixed(1)}%</div><div className="text-xs text-gray-500">Mediana</div></div>
+            <div className="bg-gray-50 rounded-lg p-3"><div className="text-lg font-bold">{orientacio.min.toFixed(1)}–{orientacio.max.toFixed(1)}%</div><div className="text-xs text-gray-500">Rang</div></div>
+            <div className="bg-gray-50 rounded-lg p-3"><div className="text-2xl font-bold">{orientacio.avgLic.toFixed(1)}</div><div className="text-xs text-gray-500">Licitadors mitjana</div></div>
+          </div>
+          <div className="bg-green-50 border border-green-300 rounded-lg p-4">
+            <div className="text-sm text-gray-600">💡 Baixa competitiva orientativa (decisió teva):</div>
+            <div className="text-2xl font-bold text-green-700">{orientacio.suggerida}</div>
+            <div className="text-xs text-gray-500 mt-1">Basat en {orientacio.n} acta(es) coincident(s). Comprova el llindar de temeritat del PCAP concret.</div>
+          </div>
+        </div>}
+      </div>}
+
+      {sel&&<div className="fixed inset-0 bg-black bg-opacity-40 flex items-center justify-center z-50 p-4" onClick={()=>setSel(null)}>
+        <div className="bg-stone-50 rounded-2xl shadow-2xl max-w-3xl w-full p-5 max-h-[90vh] overflow-y-auto" onClick={e=>e.stopPropagation()}>
+          <div className="flex justify-between items-start mb-3"><div><div className="font-bold text-gray-900">{sel.concurs}</div><div className="text-xs text-gray-500">{sel.organisme} · {sel.tipologia} · {sel.data_acta}</div></div><button onClick={()=>setSel(null)} className="text-gray-400 text-2xl">×</button></div>
+          <div className="text-sm mb-3">Import licitació s/IVA: <b>{fmtE(sel.import_licitacio)}</b> · {(sel.ofertes||[]).length} licitadors · Llindar temeritat: <b>{sel.llindar_temeritat_pct!=null?">"+sel.llindar_temeritat_pct+"%":"relatiu"}</b></div>
+          <table className="w-full text-xs"><thead><tr className="bg-gray-100 text-gray-500"><th className="text-left px-2 py-1">Empresa</th><th className="px-2">Oferta s/IVA</th><th className="px-2">Baixa %</th><th className="px-2">Baixa €</th><th className="px-2">P.Tèc</th><th className="px-2">P.Total</th><th className="px-2">Estat</th></tr></thead>
+          <tbody>{(sel.ofertes||[]).map((o,i)=>(<tr key={i} className={"border-t "+(o.es_servial?"bg-blue-50 font-semibold":"")+(o.temeraria?" text-red-600":"")}>
+            <td className="px-2 py-1">{o.empresa}{o.es_servial?" ⭐":""}</td>
+            <td className="px-2 text-right">{fmtE(o.import_ofertat)}</td>
+            <td className="px-2 text-right">{o.baixa_pct!=null?o.baixa_pct+"%":"—"}</td>
+            <td className="px-2 text-right">{fmtE(o.baixa_abs)}</td>
+            <td className="px-2 text-center">{o.puntuacio_tecnica??"—"}</td>
+            <td className="px-2 text-center">{o.puntuacio_total??"—"}</td>
+            <td className="px-2 text-center">{o.adjudicatari?"🏆":""}{o.temeraria?" ⚠️":""}</td>
+          </tr>))}</tbody></table>
+        </div>
+      </div>}
     </div>
   );
 }
@@ -2739,14 +3068,15 @@ ${informeText?`<div class="informe"><h2>📝 Informe complet de l'anàlisi</h2>$
       </div>}
       <div className="bg-stone-50 border-b shadow-sm">
         <div className="max-w-6xl mx-auto px-4 flex">
-          {[["filtres","⚙️ Criteris"],["resultats",`📋 Resultats${results.length?` (${results.length})`:""}`],["plecs","📄 Anàlisi Plecs"],["gestio","📁 Gestió"],["calendari","📅 Calendari"]].map(([id,label])=>(
+          {[["filtres","⚙️ Criteris"],["resultats",`📋 Resultats${results.length?` (${results.length})`:""}`],["plecs","📄 Anàlisi Plecs"],["gestio","📁 Gestió"],["calendari","📅 Calendari"],["baixes","📉 Anàlisi de Baixes"]].map(([id,label])=>(
             <button key={id} onClick={()=>setActiveTab(id)} className={`py-3 px-5 font-medium border-b-2 transition-colors ${activeTab===id?"border-blue-700 text-blue-700":"border-transparent text-gray-500 hover:text-gray-700"}`}>{label}</button>
           ))}
         </div>
       </div>
       {activeTab==="gestio"&&<GestorTab refreshKey={gestorRefreshKey}/>}
       {activeTab==="calendari"&&<CalendariTab/>}
-      {activeTab!=="gestio"&&activeTab!=="calendari"&&(
+      {activeTab==="baixes"&&<BaixesTab/>}
+      {activeTab!=="gestio"&&activeTab!=="calendari"&&activeTab!=="baixes"&&(
       <div className="max-w-6xl mx-auto px-4 py-5 space-y-4">
         {activeTab==="filtres"&&(<>
           <div className="bg-blue-50 border border-blue-200 rounded-xl px-4 py-3 text-xs text-blue-700 flex items-center gap-2"><span>💡</span><span>Cerca licitacions d'obres publicades les últimes 72h amb termini obert. Fonts: Transparència Catalunya + CIDO-DIBA (importació manual).</span></div>
