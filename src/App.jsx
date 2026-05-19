@@ -1484,6 +1484,7 @@ function BaixesTab(){
   const [fEmpresa,setFEmpresa]=useState("");
   const [fImpMin,setFImpMin]=useState("");
   const [fImpMax,setFImpMax]=useState("");
+  const [fTec,setFTec]=useState(""); // "" | "si" | "no"
   const [sel,setSel]=useState(null);
   // Orientador
   const [oOrg,setOOrg]=useState("");
@@ -1517,6 +1518,12 @@ function BaixesTab(){
 - import_licitacio: pressupost base de licitació SENSE IVA (número, sense símbols)
 - data_acta: data de l'acta (DD/MM/YYYY)
 - tipologia: classifica entre EXACTAMENT un d'aquests valors: ${TIPOLOGIES_BAIXA.join(", ")}
+- te_tecnica: true/false. Indica si la licitació TÉ criteris sotmesos a judici de
+  valor / memòria tècnica (sobre 2) o si és NOMÉS econòmica (adjudicació 100% per
+  preu / criteris automàtics, sense memòria tècnica puntuable). Determina-ho pel
+  que digui l'acta sobre els criteris d'adjudicació. Si l'acta valora puntuació
+  tècnica a alguna empresa → true. Si explicita que l'únic criteri és el preu o
+  que tot són criteris automàtics → false.
 - ofertes: array amb TOTES les empreses presentades. Per cada una:
    · empresa: nom fiscal exacte tal com surt a l'acta
    · import_ofertat: oferta econòmica SENSE IVA (número). Si l'acta dóna l'import amb IVA, indica'l igualment a import_ofertat i posa amb_iva:true
@@ -1539,7 +1546,7 @@ tècnica annexada o referida d'una sessió anterior.
 
 Al final, ÚNICAMENT el JSON entre els marcadors exactes:
 --JSON_INICI--
-{"concurs":"","organisme":"","expedient":"","import_licitacio":0,"data_acta":"","tipologia":"Altres","ofertes":[{"empresa":"","import_ofertat":0,"amb_iva":false,"puntuacio_tecnica":null,"puntuacio_total":null,"adjudicatari":false,"observacions":""}]}
+{"concurs":"","organisme":"","expedient":"","import_licitacio":0,"data_acta":"","tipologia":"Altres","te_tecnica":false,"ofertes":[{"empresa":"","import_ofertat":0,"amb_iva":false,"puntuacio_tecnica":null,"puntuacio_total":null,"adjudicatari":false,"observacions":""}]}
 --JSON_FI--`;
       setStatus(`Analitzant amb ${aiProvider==="claude"?"Claude":"Gemini"}…`);
       const raw=await callAI(SYS,[{type:"document",source:{type:"base64",media_type:"application/pdf",data:b64}},{type:"text",text:PROMPT}],8000,aiProvider);
@@ -1554,6 +1561,7 @@ Al final, ÚNICAMENT el JSON entre els marcadors exactes:
         concurs:parsed.concurs||"",organisme:parsed.organisme||"",expedient:parsed.expedient||"",
         tipologia:TIPOLOGIES_BAIXA.includes(parsed.tipologia)?parsed.tipologia:"Altres",
         import_licitacio:importLic,data_acta:parsed.data_acta||"",
+        te_tecnica:parsed.te_tecnica===true||(parsed.te_tecnica==null&&calc.ofertes.some(o=>o.puntuacio_tecnica!=null)),
         nombre_licitadors:calc.nombre,llindar_temeritat_pct:calc.llindarPct,
         ofertes:calc.ofertes.sort((a,b)=>(b.baixa_pct||0)-(a.baixa_pct||0)),
         raw_text:raw
@@ -1586,6 +1594,8 @@ Al final, ÚNICAMENT el JSON entre els marcadors exactes:
     if(fOrg&&a.organisme!==fOrg)return false;
     if(fTip&&a.tipologia!==fTip)return false;
     if(fEmpresa&&!(a.ofertes||[]).some(o=>o.empresa===fEmpresa))return false;
+    if(fTec==="si"&&!a.te_tecnica)return false;
+    if(fTec==="no"&&a.te_tecnica)return false;
     const imp=Number(a.import_licitacio)||0;
     if(fImpMin&&imp<Number(fImpMin))return false;
     if(fImpMax&&imp>Number(fImpMax))return false;
@@ -1669,6 +1679,7 @@ Al final, ÚNICAMENT el JSON entre els marcadors exactes:
             <div><b>Tipologia:</b> <select value={preview.tipologia} onChange={e=>setPreview({...preview,tipologia:e.target.value})} className="border rounded px-1 text-xs">{TIPOLOGIES_BAIXA.map(t=><option key={t}>{t}</option>)}</select></div>
             <div><b>Import licitació s/IVA:</b> {fmtE(preview.import_licitacio)}</div>
             <div><b>Data acta:</b> {preview.data_acta||"—"} · <b>{preview.nombre_licitadors}</b> licitadors</div>
+            <div className="col-span-2"><b>Tipus d'adjudicació:</b> {preview.te_tecnica?<span className="px-2 py-0.5 rounded bg-purple-100 text-purple-800 font-semibold text-xs">📝 Amb puntuació tècnica</span>:<span className="px-2 py-0.5 rounded bg-emerald-100 text-emerald-800 font-semibold text-xs">⚡ Només econòmic (100% preu)</span>}</div>
             <div className="col-span-2"><b>Llindar temeritat (RGLCAP art.85, estimat):</b> {preview.llindar_temeritat_pct!=null?`baixa > ${preview.llindar_temeritat_pct}%`:"(relatiu / segons nº licitadors)"}</div>
           </div>
           <table className="w-full text-xs">
@@ -1693,17 +1704,19 @@ Al final, ÚNICAMENT el JSON entre els marcadors exactes:
           <select value={fEmpresa} onChange={e=>setFEmpresa(e.target.value)} className="border rounded px-2 py-1"><option value="">Totes les empreses</option>{empreses.map(em=><option key={em}>{em}</option>)}</select>
           <input type="number" placeholder="Import mín." value={fImpMin} onChange={e=>setFImpMin(e.target.value)} className="border rounded px-2 py-1 w-28"/>
           <input type="number" placeholder="Import màx." value={fImpMax} onChange={e=>setFImpMax(e.target.value)} className="border rounded px-2 py-1 w-28"/>
-          {(fOrg||fTip||fEmpresa||fImpMin||fImpMax)&&<button onClick={()=>{setFOrg("");setFTip("");setFEmpresa("");setFImpMin("");setFImpMax("");}} className="text-red-500 hover:underline">Netejar</button>}
+          <select value={fTec} onChange={e=>setFTec(e.target.value)} className="border rounded px-2 py-1"><option value="">Tècnica: totes</option><option value="si">📝 Amb tècnica</option><option value="no">⚡ Només econòmic</option></select>
+          {(fOrg||fTip||fEmpresa||fImpMin||fImpMax||fTec)&&<button onClick={()=>{setFOrg("");setFTip("");setFEmpresa("");setFImpMin("");setFImpMax("");setFTec("");}} className="text-red-500 hover:underline">Netejar</button>}
           <span className="ml-auto text-gray-400">{filtered.length} actes</span>
         </div>
         <div className="bg-stone-50 border rounded-xl overflow-x-auto">
           <table className="w-full text-xs">
-            <thead><tr className="bg-gray-100 text-gray-500"><th className="text-left px-2 py-2">Concurs</th><th className="text-left px-2">Organisme</th><th className="px-2">Tipus</th><th className="px-2">Import s/IVA</th><th className="px-2">Licit.</th><th className="px-2">Baixa adj.</th><th className="px-2">Llindar tem.</th><th className="px-2"></th></tr></thead>
+            <thead><tr className="bg-gray-100 text-gray-500"><th className="text-left px-2 py-2">Concurs</th><th className="text-left px-2">Organisme</th><th className="px-2">Tipus</th><th className="px-2">Adjudicació</th><th className="px-2">Import s/IVA</th><th className="px-2">Licit.</th><th className="px-2">Baixa adj.</th><th className="px-2">Llindar tem.</th><th className="px-2"></th></tr></thead>
             <tbody>{filtered.map(a=>{const adj=(a.ofertes||[]).find(o=>o.adjudicatari)||(a.ofertes||[]).filter(o=>!o.temeraria&&o.baixa_pct!=null).sort((x,y)=>y.baixa_pct-x.baixa_pct)[0];return(
               <tr key={a.id} className="border-t hover:bg-gray-50 cursor-pointer" onClick={()=>setSel(a)}>
                 <td className="px-2 py-1.5 max-w-xs truncate" title={a.concurs}>{a.concurs||"—"}</td>
                 <td className="px-2">{a.organisme||"—"}</td>
                 <td className="px-2 text-center">{a.tipologia||"—"}</td>
+                <td className="px-2 text-center">{a.te_tecnica?<span className="text-purple-700" title="Amb puntuació tècnica">📝</span>:<span className="text-emerald-700" title="Només econòmic">⚡</span>}</td>
                 <td className="px-2 text-right">{fmtE(a.import_licitacio)}</td>
                 <td className="px-2 text-center">{(a.ofertes||[]).length}</td>
                 <td className="px-2 text-right font-semibold text-green-700">{adj&&adj.baixa_pct!=null?adj.baixa_pct+"%":"—"}</td>
@@ -1755,7 +1768,7 @@ Al final, ÚNICAMENT el JSON entre els marcadors exactes:
       {sel&&<div className="fixed inset-0 bg-black bg-opacity-40 flex items-center justify-center z-50 p-4" onClick={()=>setSel(null)}>
         <div className="bg-stone-50 rounded-2xl shadow-2xl max-w-3xl w-full p-5 max-h-[90vh] overflow-y-auto" onClick={e=>e.stopPropagation()}>
           <div className="flex justify-between items-start mb-3"><div><div className="font-bold text-gray-900">{sel.concurs}</div><div className="text-xs text-gray-500">{sel.organisme} · {sel.tipologia} · {sel.data_acta}</div></div><button onClick={()=>setSel(null)} className="text-gray-400 text-2xl">×</button></div>
-          <div className="text-sm mb-3">Import licitació s/IVA: <b>{fmtE(sel.import_licitacio)}</b> · {(sel.ofertes||[]).length} licitadors · Llindar temeritat: <b>{sel.llindar_temeritat_pct!=null?">"+sel.llindar_temeritat_pct+"%":"relatiu"}</b></div>
+          <div className="text-sm mb-3">Import licitació s/IVA: <b>{fmtE(sel.import_licitacio)}</b> · {(sel.ofertes||[]).length} licitadors · Llindar temeritat: <b>{sel.llindar_temeritat_pct!=null?">"+sel.llindar_temeritat_pct+"%":"relatiu"}</b> · {sel.te_tecnica?<span className="px-2 py-0.5 rounded bg-purple-100 text-purple-800 font-semibold text-xs">📝 Amb tècnica</span>:<span className="px-2 py-0.5 rounded bg-emerald-100 text-emerald-800 font-semibold text-xs">⚡ Només econòmic</span>}</div>
           <table className="w-full text-xs"><thead><tr className="bg-gray-100 text-gray-500"><th className="text-left px-2 py-1">Empresa</th><th className="px-2">Oferta s/IVA</th><th className="px-2">Baixa %</th><th className="px-2">Baixa €</th><th className="px-2">P.Tèc</th><th className="px-2">P.Total</th><th className="px-2">Estat</th></tr></thead>
           <tbody>{(sel.ofertes||[]).map((o,i)=>(<tr key={i} className={"border-t "+(o.es_servial?"bg-blue-50 font-semibold":"")+(o.temeraria?" text-red-600":"")}>
             <td className="px-2 py-1">{o.empresa}{o.es_servial?" ⭐":""}</td>
