@@ -673,6 +673,17 @@ function GestorTab({refreshKey=0}){
     const estudiPriv=lic.filter(l=>l.estat==="EN ESTUDI"&&l.public_privat!=="PUBLICA");
     const adjudicades=lic.filter(l=>l.estat==="ADJUDICADA");
     const noAdjudicades=lic.filter(l=>l.estat==="NO ADJUDICADA");
+    // PRÒXIMS 7 DIES (avui inclos fins a avui+7 = finestra de 8 dies naturals).
+    // Inclou EN ESTUDI i PROPOSTA amb data de presentació parsejable que cau a la finestra.
+    // Les que tenen text lliure (sin fecha, pendent, etc.) queden fora — no es poden ordenar.
+    const _ara=new Date();_ara.setHours(0,0,0,0);
+    const _limit7=new Date(_ara);_limit7.setDate(_limit7.getDate()+7);_limit7.setHours(23,59,59,999);
+    const proxims7=lic.filter(l=>{
+      if(l.estat!=="EN ESTUDI"&&l.estat!=="PROPOSTA")return false;
+      const d=parseD(l.data_presentacio);
+      if(!d)return false;
+      return d>=_ara&&d<=_limit7;
+    }).sort((a,b)=>parseD(a.data_presentacio)-parseD(b.data_presentacio));
     // Estils comuns
     const thS='style="background-color:#1a3d6e;color:#ffffff;font-weight:bold;border:1px solid #b5b5b5;padding:6px 8px;text-align:left;"';
     const thR='style="background-color:#1a3d6e;color:#ffffff;font-weight:bold;border:1px solid #b5b5b5;padding:6px 8px;text-align:right;"';
@@ -717,6 +728,7 @@ function GestorTab({refreshKey=0}){
     };
     // Quadre resum
     const seccions=[
+      ["⏰ A presentar pròxims 7 dies (En Estudi + Proposta)",proxims7.length,subtotal(proxims7)],
       ["Presentades",presentades.length,subtotal(presentades)],
       ["No presentades",noPresentades.length,subtotal(noPresentades)],
       ["Propostes — client públic",propostesPub.length,subtotal(propostesPub)],
@@ -726,16 +738,37 @@ function GestorTab({refreshKey=0}){
     ];
     if(adjudicades.length)seccions.push(["Adjudicades",adjudicades.length,subtotal(adjudicades)]);
     if(noAdjudicades.length)seccions.push(["No adjudicades",noAdjudicades.length,subtotal(noAdjudicades)]);
-    const totalN=seccions.reduce((s,r)=>s+r[1],0);
-    const totalI=seccions.reduce((s,r)=>s+r[2],0);
+    // La fila "⏰ Pròxims 7 dies" és informativa: les licitacions ja es compten
+    // dins d'En estudi / Propostes. No s'inclou al TOTAL per no duplicar.
+    const totalN=seccions.slice(1).reduce((s,r)=>s+r[1],0);
+    const totalI=seccions.slice(1).reduce((s,r)=>s+r[2],0);
     let quadre=`<p style="font-family:Arial,Helvetica,sans-serif;font-size:12pt;font-weight:bold;color:#1a3d6e;margin:24px 0 8px 0;border-bottom:2px solid #1a3d6e;padding-bottom:4px;">Quadre resum</p>`;
     quadre+=`<table border="1" cellspacing="0" cellpadding="6" style="border-collapse:collapse;width:100%;font-family:Arial,Helvetica,sans-serif;font-size:10.5pt;margin:6px 0 14px 0;border:1px solid #b5b5b5;"><tr><th ${thS} style="background-color:#1a3d6e;color:#fff;font-weight:bold;border:1px solid #b5b5b5;padding:6px 8px;text-align:left;width:40px;">#</th><th ${thS}>Apartat</th><th ${thR} style="background-color:#1a3d6e;color:#fff;font-weight:bold;border:1px solid #b5b5b5;padding:6px 8px;text-align:right;width:70px;">Nº</th><th ${thR} style="background-color:#1a3d6e;color:#fff;font-weight:bold;border:1px solid #b5b5b5;padding:6px 8px;text-align:right;width:180px;">Import (sense IVA)</th></tr>`;
     seccions.forEach((s,i)=>{quadre+=`<tr${rowBg(i)}><td ${tdS}>${i+1}</td><td ${tdS}>${s[0]}</td><td ${tdR}>${s[1]}</td><td ${tdR}>${fmtE(s[2])}</td></tr>`;});
     quadre+=`<tr style="background-color:#1a3d6e;"><td colspan="2" style="border:1px solid #b5b5b5;padding:6px 8px;color:#fff;font-weight:bold;">TOTAL</td><td style="border:1px solid #b5b5b5;padding:6px 8px;color:#fff;font-weight:bold;text-align:right;">${totalN}</td><td style="border:1px solid #b5b5b5;padding:6px 8px;color:#fff;font-weight:bold;text-align:right;white-space:nowrap;">${fmtE(totalI)}</td></tr></table>`;
+    quadre+=`<p style="font-size:9.5pt;color:#666;font-style:italic;margin:0 0 14px 0;">Nota: la fila "⏰ A presentar pròxims 7 dies" és informativa i no se suma al TOTAL (aquestes licitacions ja es compten als apartats En estudi / Propostes).</p>`;
     // Construir HTML
     let body=`<!DOCTYPE html><html lang="ca"><head><meta charset="UTF-8"><title>Moviments licitacions 2026</title></head><body style="font-family:Arial,Helvetica,sans-serif;font-size:11pt;color:#222;line-height:1.45;max-width:1100px;margin:24px auto;padding:0 16px;">`;
     body+=`<p style="margin:8px 0;">Bon dia,</p>`;
     body+=`<p style="margin:8px 0;">Us faig arribar els moviments de les licitacions d'edificació de l'última setmana. En primer terme, teniu un quadre resum de la setmana.</p>`;
+    // ⏰ BLOC PRÒXIMS 7 DIES — sobreavís a la gerència de la feina vinent
+    {
+      const dataLim=new Date(_limit7);const fmtDia=d=>`${String(d.getDate()).padStart(2,"0")}/${String(d.getMonth()+1).padStart(2,"0")}/${d.getFullYear()}`;
+      const titol=`⏰ PENDENTS DE PRESENTAR ELS PRÒXIMS 7 DIES (fins ${fmtDia(dataLim)})`;
+      body+=`<div style="background:#fff7e6;border:2px solid #d97706;border-radius:8px;padding:14px 16px;margin:18px 0 22px 0;">`;
+      body+=`<p style="font-size:13pt;font-weight:bold;color:#92400e;margin:0 0 10px 0;">${titol} — ${proxims7.length} licitaci${proxims7.length===1?"ó":"ons"}</p>`;
+      if(proxims7.length===0){
+        body+=`<p style="font-style:italic;color:#92400e;margin:0;">— Cap licitació pendent de presentar en aquest interval. —</p>`;
+      } else {
+        body+=`<table border="1" cellspacing="0" cellpadding="6" style="border-collapse:collapse;width:100%;font-family:Arial,Helvetica,sans-serif;font-size:10.5pt;margin:6px 0 4px 0;border:1px solid #b5b5b5;background:#fff;"><tr><th ${thS}>Licitació</th><th ${thS}>Client</th><th ${thS}>Data presentació</th><th ${thS} style="width:90px;">Estat</th><th ${thR}>Import s/IVA</th></tr>`;
+        proxims7.forEach((l,i)=>{
+          const badge=l.estat==="EN ESTUDI"?`<span style="background:#dbeafe;color:#1e40af;padding:2px 6px;border-radius:4px;font-size:9.5pt;">📘 En Estudi</span>`:`<span style="background:#fef3c7;color:#854d0e;padding:2px 6px;border-radius:4px;font-size:9.5pt;">📥 Proposta</span>`;
+          body+=`<tr${rowBg(i)}><td ${tdS}>${l.licitacio||"—"}</td><td ${tdS}>${l.client||"—"}</td><td ${tdS}>${l.data_presentacio||"—"}</td><td ${tdS}>${badge}</td><td ${tdR}>${fmtE(l.import_pec_sense_iva)}</td></tr>`;
+        });
+        body+=`<tr style="background-color:#fed7aa;"><td colspan="4" ${tdS} style="border:1px solid #b5b5b5;padding:6px 8px;text-align:right;font-weight:bold;">Subtotal</td><td ${tdR} style="border:1px solid #b5b5b5;padding:6px 8px;text-align:right;white-space:nowrap;font-weight:bold;">${fmtE(subtotal(proxims7))}</td></tr></table>`;
+      }
+      body+=`</div>`;
+    }
     // SECCIÓ MOVIMENTS DELS ÚLTIMS 7 DIES
     if(hiHaMoviments){
       const tblMov=(items,cols=["Codi","Licitació","Client","Import"])=>{
