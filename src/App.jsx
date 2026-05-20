@@ -638,8 +638,17 @@ function GestorTab({refreshKey=0}){
     try{
     const fmtE=v=>v?Number(v).toLocaleString("ca-ES",{minimumFractionDigits:2})+" €":"—";
     const subtotal=arr=>arr.reduce((s,l)=>s+(parseFloat(l.import_pec_sense_iva)||0),0);
-    // MOVIMENTS dels últims 7 dies (del log + de la taula licitacions per created_at)
-    const fa7=new Date();fa7.setDate(fa7.getDate()-7);
+    // Finestra ANCORADA AL DIVENDRES: el correu definitiu s'envia divendres i
+    // ha de cobrir [divendres anterior 23:59 → divendres actual 23:59]. Si es
+    // genera un altre dia, el "divendres proper" és el de la setmana en curs
+    // i es marca explícitament com a previsualització.
+    const _avui=new Date();
+    const _ds=_avui.getDay(); // 0=Dg, 1=Dl, ..., 5=Dv, 6=Ds
+    const _diesADv=(5-_ds+7)%7; // 0 si avui es divendres
+    const _esDivendres=(_ds===5);
+    const divendresProper=new Date(_avui);divendresProper.setDate(_avui.getDate()+_diesADv);divendresProper.setHours(23,59,59,999);
+    const fa7=new Date(divendresProper);fa7.setDate(divendresProper.getDate()-7);
+    const _fmtDia=d=>`${String(d.getDate()).padStart(2,"0")}/${String(d.getMonth()+1).padStart(2,"0")}/${d.getFullYear()}`;
     let moviments=[];
     let licsRecents=[];
     try{const{data:logs}=await supabase.from("licitacions_log").select("*").gte("created_at",fa7.toISOString()).order("created_at",{ascending:false});moviments=logs||[];}catch(e){console.error("Log error:",e);}
@@ -750,6 +759,9 @@ function GestorTab({refreshKey=0}){
     // Construir HTML
     let body=`<!DOCTYPE html><html lang="ca"><head><meta charset="UTF-8"><title>Moviments licitacions 2026</title></head><body style="font-family:Arial,Helvetica,sans-serif;font-size:11pt;color:#222;line-height:1.45;max-width:1100px;margin:24px auto;padding:0 16px;">`;
     body+=`<p style="margin:8px 0;">Bon dia,</p>`;
+    if(!_esDivendres){
+      body+=`<div style="background:#fff3cd;border:2px dashed #ca8a04;border-radius:8px;padding:12px 16px;margin:14px 0 18px 0;color:#854d0e;font-family:Arial,Helvetica,sans-serif;font-size:11pt;"><b>🧪 PREVISUALITZACIÓ (no és divendres)</b><br/>Generat avui (${_fmtDia(_avui)}). El correu definitiu s'envia <b>divendres ${_fmtDia(divendresProper)}</b> i cobreix la finestra <b>${_fmtDia(fa7)} → ${_fmtDia(divendresProper)}</b>. Els moviments que succeeixin entre avui i divendres s'hi afegiran. Cap dada es modifica per generar aquesta previsualització.</div>`;
+    }
     body+=`<p style="margin:8px 0;">Us faig arribar els moviments de les licitacions d'edificació de l'última setmana. En primer terme, teniu un quadre resum de la setmana.</p>`;
     // ⏰ BLOC PRÒXIMS 7 DIES — sobreavís a la gerència de la feina vinent
     {
@@ -777,9 +789,8 @@ function GestorTab({refreshKey=0}){
         items.forEach((l,i)=>{h+=`<tr${rowBg(i)}><td ${tdS}>${l.codi_obra||"—"}</td><td ${tdS}>${l.licitacio||"—"}</td><td ${tdS}>${l.client||"—"}</td><td ${tdR}>${fmtE(l.import_pec_sense_iva)}</td></tr>`;});
         h+=`</table>`;return h;
       };
-      const fa7Str=`${String(fa7.getDate()).padStart(2,"0")}/${String(fa7.getMonth()+1).padStart(2,"0")}/${fa7.getFullYear()}`;
       body+=`<div style="background:#eef5ff;border:2px solid #1a3d6e;border-radius:8px;padding:14px 16px;margin:18px 0 22px 0;">`;
-      body+=`<p style="font-size:13pt;font-weight:bold;color:#1a3d6e;margin:0 0 10px 0;">🔄 MOVIMENTS D'AQUESTA SETMANA (DES DEL ${fa7Str} FINS AVUI)</p>`;
+      body+=`<p style="font-size:13pt;font-weight:bold;color:#1a3d6e;margin:0 0 10px 0;">🔄 MOVIMENTS DEL CICLE SETMANAL (${_fmtDia(fa7)} → ${_fmtDia(divendresProper)})</p>`;
       const sec=(emoji,title,items)=>{if(!items.length)return"";return`<p style="font-size:11pt;font-weight:bold;color:#1a3d6e;margin:12px 0 4px 0;">${emoji} ${title} (${items.length})</p>${tblMov(items)}`;};
       body+=sec("📥","Noves PROPOSTES (pendents de decisió de gerència)",movNovesPropostes);
       body+=sec("📘","Noves licitacions directament a EN ESTUDI",movNovesEnEstudi);
