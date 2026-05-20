@@ -1560,6 +1560,12 @@ function BaixesTab(){
   const [consultaResp,setConsultaResp]=useState("");
   const [consultaLoading,setConsultaLoading]=useState(false);
   const [consultaErr,setConsultaErr]=useState("");
+  // Drill-down per empresa amb filtres independents (modal)
+  const [selEmpresa,setSelEmpresa]=useState(null);
+  const [eOrg,setEOrg]=useState("");
+  const [eTip,setETip]=useState("");
+  const [eImpMin,setEImpMin]=useState("");
+  const [eImpMax,setEImpMax]=useState("");
   const [aiProvider]=useState(()=>getAiProvider());
   // Filtres de la base de dades
   const [fOrg,setFOrg]=useState("");
@@ -1867,9 +1873,9 @@ Respon en català, amb taula markdown si ajuda. Si cal, fes mitjanes, ordenacion
           {filtered.length===0&&<div className="text-center py-10 text-gray-400 text-sm">Cap acta. Puja la primera des de "📥 Pujar acta".</div>}
         </div>
         {competidors.length>0&&<div className="bg-stone-50 border rounded-xl p-3">
-          <h3 className="text-sm font-bold text-gray-700 mb-2">🏢 Intel·ligència de competidors</h3>
+          <h3 className="text-sm font-bold text-gray-700 mb-2">🏢 Intel·ligència de competidors <span className="text-xs font-normal text-gray-400">(clica una fila per veure l'historial complet i filtrar)</span></h3>
           <table className="w-full text-xs"><thead><tr className="bg-gray-100 text-gray-500"><th className="text-left px-2 py-1">Empresa</th><th className="px-2">Concursos</th><th className="px-2">Organismes</th><th className="px-2">Baixa mitjana</th><th className="px-2">P.Tèc mitjana</th><th className="px-2">Temeràries</th><th className="px-2">Adjudicades</th></tr></thead>
-          <tbody>{competidors.slice(0,30).map((c,i)=>(<tr key={i} className={"border-t "+(esServialNom(c.empresa)?"bg-blue-50 font-semibold":"")}>
+          <tbody>{competidors.slice(0,30).map((c,i)=>(<tr key={i} className={"border-t cursor-pointer hover:bg-blue-100 "+(esServialNom(c.empresa)?"bg-blue-50 font-semibold":"")} onClick={()=>{setSelEmpresa(c.empresa);setEOrg("");setETip("");setEImpMin("");setEImpMax("");}}>
             <td className="px-2 py-1">{c.empresa}{esServialNom(c.empresa)?" ⭐":""}</td>
             <td className="px-2 text-center">{c.concursos}</td>
             <td className="px-2 text-center">{c.orgsN}</td>
@@ -1930,7 +1936,7 @@ Respon en català, amb taula markdown si ajuda. Si cal, fes mitjanes, ordenacion
           <table className="w-full text-xs"><thead><tr className="bg-gray-100 text-gray-500"><th className="px-2 py-1">Pos.</th><th className="text-left px-2 py-1">Empresa</th><th className="px-2">Oferta s/IVA</th><th className="px-2">Baixa %</th><th className="px-2">Baixa €</th><th className="px-2">P.Tèc</th><th className="px-2">P.Total</th><th className="px-2">Estat</th></tr></thead>
           <tbody>{(sel.ofertes||[]).sort((a,b)=>(a.posicio||999)-(b.posicio||999)).map((o,i)=>(<tr key={i} className={"border-t "+(o.es_servial?"bg-blue-50 font-semibold":"")+(o.temeraria?" text-red-600":"")}>
             <td className="px-2 py-1 text-center font-bold">{o.posicio||"—"}</td>
-            <td className="px-2 py-1">{o.empresa}{o.es_servial?" ⭐":""}</td>
+            <td className="px-2 py-1"><button onClick={()=>{setSel(null);setSelEmpresa(o.empresa);setEOrg("");setETip("");setEImpMin("");setEImpMax("");}} className="text-left hover:underline text-blue-700">{o.empresa}</button>{o.es_servial?" ⭐":""}</td>
             <td className="px-2 text-right">{fmtE(o.import_ofertat)}</td>
             <td className="px-2 text-right">{o.baixa_pct!=null?o.baixa_pct+"%":"—"}</td>
             <td className="px-2 text-right">{fmtE(o.baixa_abs)}</td>
@@ -1940,6 +1946,77 @@ Respon en català, amb taula markdown si ajuda. Si cal, fes mitjanes, ordenacion
           </tr>))}</tbody></table>
         </div>
       </div>}
+
+      {selEmpresa&&(()=>{
+        // Calcula historial + KPIs + opcions de filtre derivades.
+        const historial=actes.filter(a=>(a.ofertes||[]).some(o=>o.empresa===selEmpresa))
+          .map(a=>({acta:a,oferta:(a.ofertes||[]).find(o=>o.empresa===selEmpresa)}))
+          .filter(({acta})=>{
+            if(eOrg&&acta.organisme!==eOrg)return false;
+            if(eTip&&acta.tipologia!==eTip)return false;
+            const imp=Number(acta.import_licitacio)||0;
+            if(eImpMin&&imp<Number(eImpMin))return false;
+            if(eImpMax&&imp>Number(eImpMax))return false;
+            return true;
+          })
+          .sort((a,b)=>{
+            // Ordena per data acta desc (més recent primer)
+            const da=parseFullDate(a.acta.data_acta)||new Date(0);
+            const db=parseFullDate(b.acta.data_acta)||new Date(0);
+            return db-da;
+          });
+        const baixes=historial.map(h=>Number(h.oferta.baixa_pct)).filter(x=>!isNaN(x));
+        const ptecs=historial.map(h=>Number(h.oferta.puntuacio_tecnica)).filter(x=>!isNaN(x));
+        const posicions=historial.map(h=>Number(h.oferta.posicio)).filter(x=>!isNaN(x)&&x>0);
+        const avg=arr=>arr.length?arr.reduce((s,x)=>s+x,0)/arr.length:null;
+        const kAdj=historial.filter(h=>h.oferta.adjudicatari).length;
+        const kTem=historial.filter(h=>h.oferta.temeraria).length;
+        const organismesE=[...new Set(actes.filter(a=>(a.ofertes||[]).some(o=>o.empresa===selEmpresa)).map(a=>a.organisme).filter(Boolean))].sort();
+        return <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4" onClick={()=>setSelEmpresa(null)}>
+          <div className="bg-stone-50 rounded-2xl shadow-2xl max-w-5xl w-full p-5 max-h-[92vh] overflow-y-auto" onClick={e=>e.stopPropagation()}>
+            <div className="flex items-start justify-between mb-3">
+              <div>
+                <div className="text-xs text-gray-400">🏢 Historial complet d'empresa</div>
+                <div className="text-lg font-bold text-gray-900">{selEmpresa}{esServialNom(selEmpresa)?" ⭐":""}</div>
+              </div>
+              <button onClick={()=>setSelEmpresa(null)} className="text-gray-400 hover:text-gray-600 text-2xl">×</button>
+            </div>
+            {/* Filtres */}
+            <div className="bg-stone-100 border rounded-xl p-3 flex flex-wrap gap-2 items-center text-xs mb-3">
+              <span className="font-semibold text-gray-500 uppercase">Filtres:</span>
+              <select value={eOrg} onChange={e=>setEOrg(e.target.value)} className="border rounded px-2 py-1"><option value="">Tots organismes</option>{organismesE.map(o=><option key={o}>{o}</option>)}</select>
+              <select value={eTip} onChange={e=>setETip(e.target.value)} className="border rounded px-2 py-1"><option value="">Totes tipologies</option>{TIPOLOGIES_BAIXA.map(t=><option key={t}>{t}</option>)}</select>
+              <input type="number" placeholder="Import mín." value={eImpMin} onChange={e=>setEImpMin(e.target.value)} className="border rounded px-2 py-1 w-28"/>
+              <input type="number" placeholder="Import màx." value={eImpMax} onChange={e=>setEImpMax(e.target.value)} className="border rounded px-2 py-1 w-28"/>
+              {(eOrg||eTip||eImpMin||eImpMax)&&<button onClick={()=>{setEOrg("");setETip("");setEImpMin("");setEImpMax("");}} className="text-red-500 hover:underline">Netejar</button>}
+              <span className="ml-auto text-gray-500">{historial.length} acta(es) coincident(s)</span>
+            </div>
+            {/* KPIs */}
+            <div className="grid grid-cols-2 md:grid-cols-5 gap-2 mb-3 text-center text-xs">
+              <div className="bg-blue-50 rounded-lg p-2"><div className="text-lg font-bold text-blue-700">{historial.length}</div><div className="text-gray-500">Concursos</div></div>
+              <div className="bg-gray-50 rounded-lg p-2"><div className="text-lg font-bold">{avg(baixes)!=null?avg(baixes).toFixed(1)+"%":"—"}</div><div className="text-gray-500">Baixa mitjana</div></div>
+              <div className="bg-purple-50 rounded-lg p-2"><div className="text-lg font-bold text-purple-700">{avg(ptecs)!=null?avg(ptecs).toFixed(1):"—"}</div><div className="text-gray-500">P.Tèc mitjana</div></div>
+              <div className="bg-gray-50 rounded-lg p-2"><div className="text-lg font-bold">{avg(posicions)!=null?avg(posicions).toFixed(1):"—"}</div><div className="text-gray-500">Posició mitjana</div></div>
+              <div className="bg-green-50 rounded-lg p-2"><div className="text-lg font-bold text-green-700">{kAdj}/{historial.length}{kTem?` · ⚠️${kTem}`:""}</div><div className="text-gray-500">Adjudicades · Temer.</div></div>
+            </div>
+            {/* Taula d'actes */}
+            {historial.length===0?<div className="text-center py-8 text-gray-400 text-sm">Cap acta coincident amb aquests filtres.</div>:
+              <div className="overflow-x-auto"><table className="w-full text-xs"><thead><tr className="bg-gray-100 text-gray-500"><th className="text-left px-2 py-2">Data</th><th className="text-left px-2">Concurs</th><th className="text-left px-2">Organisme</th><th className="px-2">Tipus</th><th className="px-2">Import lic.</th><th className="px-2">Oferta</th><th className="px-2">Baixa%</th><th className="px-2">P.Tèc</th><th className="px-2">Pos.</th><th className="px-2">Estat</th></tr></thead>
+                <tbody>{historial.map(({acta,oferta},i)=>(<tr key={i} className="border-t hover:bg-gray-50">
+                  <td className="px-2 py-1 whitespace-nowrap text-gray-500">{acta.data_acta||"—"}</td>
+                  <td className="px-2 py-1 max-w-xs truncate" title={acta.concurs}>{acta.concurs||"—"}</td>
+                  <td className="px-2 py-1">{acta.organisme||"—"}</td>
+                  <td className="px-2 py-1 text-center">{acta.tipologia||"—"}</td>
+                  <td className="px-2 py-1 text-right">{fmtE(acta.import_licitacio)}</td>
+                  <td className="px-2 py-1 text-right">{fmtE(oferta.import_ofertat)}</td>
+                  <td className="px-2 py-1 text-right">{oferta.baixa_pct!=null?oferta.baixa_pct+"%":"—"}</td>
+                  <td className="px-2 py-1 text-center">{oferta.puntuacio_tecnica??"—"}</td>
+                  <td className="px-2 py-1 text-center font-bold">{oferta.posicio||"—"}</td>
+                  <td className="px-2 py-1 text-center">{oferta.adjudicatari?"🏆":""}{oferta.temeraria?" ⚠️":""}</td>
+                </tr>))}</tbody></table></div>}
+          </div>
+        </div>;
+      })()}
     </div>
   );
 }
