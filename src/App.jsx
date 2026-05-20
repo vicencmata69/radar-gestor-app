@@ -331,6 +331,41 @@ function validPubUrl(u){
     return s;
   }catch(e){return"";}
 }
+// Calcula la POSICIÓ final de cada oferta (1=guanyador). Híbrid:
+//   - Si TOTES les ofertes ja porten "posicio" explícita (extreta per la IA
+//     de l'acta), es respecta i no es toca res.
+//   - Altrament, es deriva: amb tècnica → per puntuacio_total desc; sense
+//     tècnica → per baixa% desc, amb temeràries empeses al final.
+function calcPosicions(ofertes, teTecnica){
+  if(!Array.isArray(ofertes)||!ofertes.length)return ofertes||[];
+  const totesAmbPos = ofertes.every(o => o.posicio!=null && Number(o.posicio)>0);
+  if (totesAmbPos) return ofertes;
+  // Indexem per preservar l'ordre original visual
+  const tmp = ofertes.map((o,i)=>({o,i}));
+  if (teTecnica) {
+    tmp.sort((a,b) => {
+      const pa = Number(a.o.puntuacio_total)||0, pb = Number(b.o.puntuacio_total)||0;
+      if (pb !== pa) return pb-pa;
+      // Desempat: import més baix primer
+      const ia = Number(a.o.import_ofertat)||Infinity, ib = Number(b.o.import_ofertat)||Infinity;
+      return ia - ib;
+    });
+  } else {
+    tmp.sort((a,b) => {
+      const ta = a.o.temeraria?1:0, tb = b.o.temeraria?1:0;
+      if (ta !== tb) return ta - tb; // no temeràries primer
+      const ba = Number(a.o.baixa_pct), bb = Number(b.o.baixa_pct);
+      const baOk = !isNaN(ba), bbOk = !isNaN(bb);
+      if (baOk && bbOk) return bb - ba;        // baixa més alta primer
+      if (baOk) return -1;
+      if (bbOk) return 1;
+      return 0;
+    });
+  }
+  const posPerIdx = new Array(ofertes.length);
+  tmp.forEach((it,rank) => { posPerIdx[it.i] = rank+1; });
+  return ofertes.map((o,i) => ({...o, posicio: posPerIdx[i]}));
+}
 // Càlcul de baixes temeràries / ofertes anormalment baixes segons la fórmula
 // estàndard RGLCAP art. 85 (RD 1098/2001). ÉS UNA ESTIMACIÓ: el PCAP concret
 // pot definir-ne una altra. Retorna les ofertes amb camp `temeraria` i el
@@ -1521,6 +1556,11 @@ function BaixesTab(){
   const [status,setStatus]=useState("");
   const [errMsg,setErrMsg]=useState("");
   const [preview,setPreview]=useState(null); // resultat IA pendent de desar
+  // Consultes: pregunta lliure, resposta IA, estat de càrrega
+  const [consultaQ,setConsultaQ]=useState("");
+  const [consultaResp,setConsultaResp]=useState("");
+  const [consultaLoading,setConsultaLoading]=useState(false);
+  const [consultaErr,setConsultaErr]=useState("");
   const [aiProvider]=useState(()=>getAiProvider());
   // Filtres de la base de dades
   const [fOrg,setFOrg]=useState("");
@@ -1586,6 +1626,10 @@ function BaixesTab(){
      l'acta NO recull cap puntuació tècnica per a cap empresa, posa null. Però
      si n'hi ha per a unes empreses i no per a altres, omple les que hi siguin.
    · puntuacio_total: punts totals (tècnica + econòmica) si hi consten (número o null)
+   · posicio: número de posició final a la classificació si l'acta la dóna
+     explícitament (1=guanyador, 2=segon, etc.). Si l'acta NO indica
+     classificació numèrica, posa null (el sistema la calcularà a partir
+     de puntuacions o baixes).
    · adjudicatari: true si l'acta proposa aquesta empresa com a adjudicatària, sinó false
 Si l'acta proposa adjudicatari, marca'l. Si exclou alguna oferta per temeritat o documentació, posa-ho a "observacions" de l'oferta.
 IMPORTANT sobre la puntuació tècnica: serveix per avaluar com de generós o
@@ -1596,7 +1640,7 @@ tècnica annexada o referida d'una sessió anterior.
 
 Al final, ÚNICAMENT el JSON entre els marcadors exactes:
 --JSON_INICI--
-{"concurs":"","organisme":"","expedient":"","import_licitacio":0,"data_acta":"","tipologia":"Altres","te_tecnica":false,"ofertes":[{"empresa":"","import_ofertat":0,"amb_iva":false,"puntuacio_tecnica":null,"puntuacio_total":null,"adjudicatari":false,"observacions":""}]}
+{"concurs":"","organisme":"","expedient":"","import_licitacio":0,"data_acta":"","tipologia":"Altres","te_tecnica":false,"ofertes":[{"empresa":"","import_ofertat":0,"amb_iva":false,"puntuacio_tecnica":null,"puntuacio_total":null,"posicio":null,"adjudicatari":false,"observacions":""}]}
 --JSON_FI--`;
       setStatus(`Analitzant amb ${aiProvider==="claude"?"Claude":"Gemini"}…`);
       const raw=await callAI(SYS,[{type:"document",source:{type:"base64",media_type:"application/pdf",data:b64}},{type:"text",text:PROMPT}],8000,aiProvider);
@@ -1605,15 +1649,17 @@ Al final, ÚNICAMENT el JSON entre els marcadors exactes:
       const parsed=parseJSONLenient(m?m[1]:raw);
       if(!parsed||!parsed.ofertes)throw new Error("No s'ha pogut extreure el JSON de l'acta. Revisa el PDF.");
       const importLic=Number(parsed.import_licitacio)||0;
-      const calc=calcTemeritat((parsed.ofertes||[]).map(o=>({...o,import_ofertat:Number(o.import_ofertat)||0,es_servial:esServialNom(o.empresa)})),importLic);
+      const teTec=parsed.te_tecnica===true||(parsed.te_tecnica==null&&(parsed.ofertes||[]).some(o=>o.puntuacio_tecnica!=null));
+      const calc=calcTemeritat((parsed.ofertes||[]).map(o=>({...o,import_ofertat:Number(o.import_ofertat)||0,es_servial:esServialNom(o.empresa),posicio:o.posicio!=null?Number(o.posicio):null})),importLic);
+      const ofertesAmbPos=calcPosicions(calc.ofertes,teTec);
       setPreview({
         id:Date.now(),
         concurs:parsed.concurs||"",organisme:parsed.organisme||"",expedient:parsed.expedient||"",
         tipologia:TIPOLOGIES_BAIXA.includes(parsed.tipologia)?parsed.tipologia:"Altres",
         import_licitacio:importLic,data_acta:parsed.data_acta||"",
-        te_tecnica:parsed.te_tecnica===true||(parsed.te_tecnica==null&&calc.ofertes.some(o=>o.puntuacio_tecnica!=null)),
+        te_tecnica:teTec,
         nombre_licitadors:calc.nombre,llindar_temeritat_pct:calc.llindarPct,
-        ofertes:calc.ofertes.sort((a,b)=>(b.baixa_pct||0)-(a.baixa_pct||0)),
+        ofertes:ofertesAmbPos.sort((a,b)=>(a.posicio||999)-(b.posicio||999)),
         raw_text:raw
       });
       setStatus("");
@@ -1623,17 +1669,61 @@ Al final, ÚNICAMENT el JSON entre els marcadors exactes:
 
   const desar=async()=>{
     if(!preview)return;
+    setErrMsg("");
     try{
       const row={...preview};delete row.__local;
-      if(isSupabaseConfigured())await supabase.from("actes_obertura").upsert(row);
+      if(isSupabaseConfigured()){
+        const{error}=await supabase.from("actes_obertura").upsert(row);
+        // Supabase JS NO llança per errors PostgREST; els retorna a .error.
+        // Si no comprovem aquí, l'usuari veu "desat" pero res s'ha guardat.
+        if(error)throw new Error(`Supabase: ${error.message||error.code||"error desconegut"}`);
+      }
       setActes(prev=>[row,...prev.filter(a=>a.id!==row.id)]);
       setPreview(null);setFiles([]);setSub("db");
-    }catch(e){setErrMsg("Error en desar: "+e.message);}
+    }catch(e){
+      setErrMsg("❌ NO s'ha desat: "+e.message+" — l'acta segueix a la previsualització. Avisa abans de tornar a pujar.");
+      console.error("Error desant acta:",e);
+    }
   };
   const eliminar=async id=>{
     if(!confirm("Eliminar aquesta acta de la base de dades?"))return;
     if(isSupabaseConfigured())await supabase.from("actes_obertura").delete().eq("id",id);
     setActes(prev=>prev.filter(a=>a.id!==id));setSel(null);
+  };
+
+  // Pregunta IA sobre la base d'actes (Consultes)
+  const preguntar=async()=>{
+    if(!consultaQ.trim()){setConsultaErr("Escriu una pregunta primer.");return;}
+    if(!actes.length){setConsultaErr("Encara no hi ha actes a la base de dades.");return;}
+    setConsultaLoading(true);setConsultaErr("");setConsultaResp("");
+    try{
+      const dades=actes.map(a=>({
+        concurs:a.concurs,organisme:a.organisme,expedient:a.expedient,tipologia:a.tipologia,
+        import_licitacio:a.import_licitacio,data_acta:a.data_acta,
+        nombre_licitadors:a.nombre_licitadors,llindar_temeritat_pct:a.llindar_temeritat_pct,
+        te_tecnica:a.te_tecnica,
+        ofertes:(a.ofertes||[]).map(o=>({
+          empresa:o.empresa,import_ofertat:o.import_ofertat,baixa_pct:o.baixa_pct,
+          baixa_abs:o.baixa_abs,puntuacio_tecnica:o.puntuacio_tecnica,
+          puntuacio_total:o.puntuacio_total,posicio:o.posicio,
+          adjudicatari:o.adjudicatari,temeraria:o.temeraria,es_servial:o.es_servial
+        }))
+      }));
+      const SYS=`Ets un analista de contractació pública especialista en obres. Tens accés a una base de dades d'actes d'obertura amb les empreses presentades, els imports oferts, les baixes (%) calculades, les puntuacions tècniques i les posicions finals. Respon les preguntes de l'usuari amb dades CONCRETES extretes únicament de les dades proporcionades — mai inventis xifres. Utilitza taules markdown quan ajudin a comparar. Sigues concís però complet. Si la pregunta no es pot respondre amb les dades, digues-ho clarament. Idioma: català.`;
+      const PROMPT=`BASE DE DADES (${dades.length} acta${dades.length===1?"":"s"} d'obertura, format JSON):
+\`\`\`json
+${JSON.stringify(dades,null,1)}
+\`\`\`
+
+PREGUNTA DE L'USUARI:
+${consultaQ.trim()}
+
+Respon en català, amb taula markdown si ajuda. Si cal, fes mitjanes, ordenacions o filtres mentalment a partir de les dades.`;
+      const r=await callAI(SYS,[{type:"text",text:PROMPT}],4000,aiProvider);
+      if(!r)throw new Error("La IA no ha retornat resposta.");
+      setConsultaResp(r);
+    }catch(e){setConsultaErr("Error: "+e.message);}
+    finally{setConsultaLoading(false);}
   };
 
   const fmtE=n=>{const v=Number(n);return isNaN(v)||!v?"—":v.toLocaleString("ca-ES",{minimumFractionDigits:2,maximumFractionDigits:2})+" €";};
@@ -1708,7 +1798,7 @@ Al final, ÚNICAMENT el JSON entre els marcadors exactes:
       <div className="flex items-center justify-between flex-wrap gap-3">
         <h2 className="text-xl font-bold text-gray-900">📉 Anàlisi de Baixes</h2>
         <div className="flex gap-1">
-          {[["db","🗂️ Base de dades"],["upload","📥 Pujar acta"],["orientador","🎯 Orientador"]].map(([id,l])=>(
+          {[["db","🗂️ Base de dades"],["upload","📥 Pujar acta"],["orientador","🎯 Orientador"],["consultes","💬 Consultes"]].map(([id,l])=>(
             <button key={id} onClick={()=>setSub(id)} className={`px-3 py-1.5 rounded-lg text-sm font-semibold ${sub===id?"bg-blue-600 text-white":"bg-stone-100 text-gray-600 hover:bg-stone-200"}`}>{l}</button>
           ))}
         </div>
@@ -1727,16 +1817,17 @@ Al final, ÚNICAMENT el JSON entre els marcadors exactes:
             <div><b>Organisme:</b> {preview.organisme||"—"}</div>
             <div><b>Expedient:</b> {preview.expedient||"—"}</div>
             <div><b>Tipologia:</b> <select value={preview.tipologia} onChange={e=>setPreview({...preview,tipologia:e.target.value})} className="border rounded px-1 text-xs">{TIPOLOGIES_BAIXA.map(t=><option key={t}>{t}</option>)}</select></div>
-            <div><b>Import licitació s/IVA:</b> <input type="number" step="0.01" value={preview.import_licitacio||""} placeholder="introdueix l'import" onChange={e=>{const imp=Number(e.target.value)||0;const calc=calcTemeritat(preview.ofertes,imp);setPreview({...preview,import_licitacio:imp,llindar_temeritat_pct:calc.llindarPct,nombre_licitadors:calc.nombre,ofertes:calc.ofertes});}} className={"border rounded px-2 py-0.5 text-xs w-40 "+(!preview.import_licitacio?"bg-amber-50 border-amber-400":"")}/> €{!preview.import_licitacio&&<span className="text-amber-600 text-xs ml-1">⚠️ cal per calcular baixes</span>}</div>
+            <div><b>Import licitació s/IVA:</b> <input type="number" step="0.01" value={preview.import_licitacio||""} placeholder="introdueix l'import" onChange={e=>{const imp=Number(e.target.value)||0;const calc=calcTemeritat(preview.ofertes,imp);const pos=calcPosicions(calc.ofertes,preview.te_tecnica);setPreview({...preview,import_licitacio:imp,llindar_temeritat_pct:calc.llindarPct,nombre_licitadors:calc.nombre,ofertes:pos});}} className={"border rounded px-2 py-0.5 text-xs w-40 "+(!preview.import_licitacio?"bg-amber-50 border-amber-400":"")}/> €{!preview.import_licitacio&&<span className="text-amber-600 text-xs ml-1">⚠️ cal per calcular baixes</span>}</div>
             <div><b>Data acta:</b> {preview.data_acta||"—"} · <b>{preview.nombre_licitadors}</b> licitadors</div>
             <div className="col-span-2"><b>Tipus d'adjudicació:</b> {preview.te_tecnica?<span className="px-2 py-0.5 rounded bg-purple-100 text-purple-800 font-semibold text-xs">📝 Amb puntuació tècnica</span>:<span className="px-2 py-0.5 rounded bg-emerald-100 text-emerald-800 font-semibold text-xs">⚡ Només econòmic (100% preu)</span>}</div>
             <div className="col-span-2"><b>Llindar temeritat (RGLCAP art.85, estimat):</b> {preview.llindar_temeritat_pct!=null?`baixa > ${preview.llindar_temeritat_pct}%`:"(relatiu / segons nº licitadors)"}</div>
           </div>
           <table className="w-full text-xs">
-            <thead><tr className="bg-gray-100 text-gray-500"><th className="text-left px-2 py-1">Empresa</th><th className="px-2">Oferta s/IVA</th><th className="px-2">Baixa %</th><th className="px-2">Baixa €</th><th className="px-2">P.Tèc</th><th className="px-2">Estat</th></tr></thead>
+            <thead><tr className="bg-gray-100 text-gray-500"><th className="px-2 py-1">Pos.</th><th className="text-left px-2 py-1">Empresa</th><th className="px-2">Oferta s/IVA</th><th className="px-2">Baixa %</th><th className="px-2">Baixa €</th><th className="px-2">P.Tèc</th><th className="px-2">Estat</th></tr></thead>
             <tbody>{preview.ofertes.map((o,i)=>(<tr key={i} className={"border-t "+(o.es_servial?"bg-blue-50 font-semibold":"")}>
+              <td className="px-2 py-1 text-center font-bold">{o.posicio||"—"}</td>
               <td className="px-2 py-1">{o.empresa||"—"}{o.es_servial?" ⭐":""}</td>
-              <td className="px-2 text-right"><input type="number" step="0.01" value={o.import_ofertat||""} placeholder="—" onChange={e=>{const ofs=preview.ofertes.map((x,xi)=>xi===i?{...x,import_ofertat:Number(e.target.value)||0}:x);const calc=calcTemeritat(ofs,preview.import_licitacio);setPreview({...preview,llindar_temeritat_pct:calc.llindarPct,nombre_licitadors:calc.nombre,ofertes:calc.ofertes});}} className="border rounded px-1 py-0.5 text-xs w-28 text-right"/>{o.amb_iva?" c/IVA":""}</td>
+              <td className="px-2 text-right"><input type="number" step="0.01" value={o.import_ofertat||""} placeholder="—" onChange={e=>{const ofs=preview.ofertes.map((x,xi)=>xi===i?{...x,import_ofertat:Number(e.target.value)||0}:x);const calc=calcTemeritat(ofs,preview.import_licitacio);const pos=calcPosicions(calc.ofertes,preview.te_tecnica);setPreview({...preview,llindar_temeritat_pct:calc.llindarPct,nombre_licitadors:calc.nombre,ofertes:pos});}} className="border rounded px-1 py-0.5 text-xs w-28 text-right"/>{o.amb_iva?" c/IVA":""}</td>
               <td className="px-2 text-right">{o.baixa_pct!=null?o.baixa_pct+"%":"—"}</td>
               <td className="px-2 text-right">{fmtE(o.baixa_abs)}</td>
               <td className="px-2 text-center">{o.puntuacio_tecnica??"—"}</td>
@@ -1815,12 +1906,31 @@ Al final, ÚNICAMENT el JSON entre els marcadors exactes:
         </div>}
       </div>}
 
+      {sub==="consultes"&&<div className="space-y-3">
+        <div className="bg-stone-50 border rounded-xl p-4">
+          <div className="text-sm font-semibold text-gray-700 mb-2">💬 Pregunta natural sobre la base d'actes ({actes.length} acta{actes.length===1?"":"s"})</div>
+          <textarea rows={3} value={consultaQ} onChange={e=>setConsultaQ(e.target.value)} className="w-full border rounded px-3 py-2 text-sm" placeholder={`Exemples:\n• Quina baixa mitjana fa CONSTRAULA?\n• Quins organismes premien més la puntuació tècnica?\n• Quantes vegades hem quedat 1rs en obres d'edificació?\n• Mostra'm les actes amb més de 5 licitadors ordenades per baixa adjudicatària.`}/>
+          <div className="flex items-center gap-2 mt-2">
+            <button onClick={preguntar} disabled={consultaLoading||!actes.length} className="px-4 py-2 bg-blue-600 hover:bg-blue-700 disabled:opacity-40 text-white text-sm font-semibold rounded-lg">{consultaLoading?"Pensant…":"🔍 Preguntar"}</button>
+            {consultaResp&&<button onClick={()=>{setConsultaResp("");setConsultaQ("");}} className="px-3 py-2 text-xs text-gray-500 hover:text-gray-700">Netejar</button>}
+            <span className="text-xs text-gray-400">Usa {aiProvider==="claude"?"Claude":"Gemini"} amb totes les actes com a context.</span>
+          </div>
+          {consultaErr&&<div className="mt-2 text-xs text-red-600">{consultaErr}</div>}
+        </div>
+        {consultaResp&&<div className="bg-stone-50 border-2 border-blue-200 rounded-xl p-4">
+          <div className="text-xs text-gray-400 mb-2">Resposta:</div>
+          <div className="text-sm text-gray-800 leading-relaxed whitespace-pre-wrap" style={{fontFamily:"Arial, Helvetica, sans-serif"}}>{consultaResp}</div>
+        </div>}
+        {!actes.length&&<div className="bg-amber-50 border border-amber-300 rounded-xl p-3 text-xs text-amber-800">Encara no hi ha actes a la base de dades. Puja-les des de "📥 Pujar acta" per poder consultar.</div>}
+      </div>}
+
       {sel&&<div className="fixed inset-0 bg-black bg-opacity-40 flex items-center justify-center z-50 p-4" onClick={()=>setSel(null)}>
         <div className="bg-stone-50 rounded-2xl shadow-2xl max-w-3xl w-full p-5 max-h-[90vh] overflow-y-auto" onClick={e=>e.stopPropagation()}>
           <div className="flex justify-between items-start mb-3"><div><div className="font-bold text-gray-900">{sel.concurs}</div><div className="text-xs text-gray-500">{sel.organisme} · {sel.tipologia} · {sel.data_acta}</div></div><button onClick={()=>setSel(null)} className="text-gray-400 text-2xl">×</button></div>
           <div className="text-sm mb-3">Import licitació s/IVA: <b>{fmtE(sel.import_licitacio)}</b> · {(sel.ofertes||[]).length} licitadors · Llindar temeritat: <b>{sel.llindar_temeritat_pct!=null?">"+sel.llindar_temeritat_pct+"%":"relatiu"}</b> · {sel.te_tecnica?<span className="px-2 py-0.5 rounded bg-purple-100 text-purple-800 font-semibold text-xs">📝 Amb tècnica</span>:<span className="px-2 py-0.5 rounded bg-emerald-100 text-emerald-800 font-semibold text-xs">⚡ Només econòmic</span>}</div>
-          <table className="w-full text-xs"><thead><tr className="bg-gray-100 text-gray-500"><th className="text-left px-2 py-1">Empresa</th><th className="px-2">Oferta s/IVA</th><th className="px-2">Baixa %</th><th className="px-2">Baixa €</th><th className="px-2">P.Tèc</th><th className="px-2">P.Total</th><th className="px-2">Estat</th></tr></thead>
-          <tbody>{(sel.ofertes||[]).map((o,i)=>(<tr key={i} className={"border-t "+(o.es_servial?"bg-blue-50 font-semibold":"")+(o.temeraria?" text-red-600":"")}>
+          <table className="w-full text-xs"><thead><tr className="bg-gray-100 text-gray-500"><th className="px-2 py-1">Pos.</th><th className="text-left px-2 py-1">Empresa</th><th className="px-2">Oferta s/IVA</th><th className="px-2">Baixa %</th><th className="px-2">Baixa €</th><th className="px-2">P.Tèc</th><th className="px-2">P.Total</th><th className="px-2">Estat</th></tr></thead>
+          <tbody>{(sel.ofertes||[]).sort((a,b)=>(a.posicio||999)-(b.posicio||999)).map((o,i)=>(<tr key={i} className={"border-t "+(o.es_servial?"bg-blue-50 font-semibold":"")+(o.temeraria?" text-red-600":"")}>
+            <td className="px-2 py-1 text-center font-bold">{o.posicio||"—"}</td>
             <td className="px-2 py-1">{o.empresa}{o.es_servial?" ⭐":""}</td>
             <td className="px-2 text-right">{fmtE(o.import_ofertat)}</td>
             <td className="px-2 text-right">{o.baixa_pct!=null?o.baixa_pct+"%":"—"}</td>
