@@ -2,6 +2,20 @@
 @tailwind components;
 @tailwind utilities;
 
+/* Estils per a la resposta IA del sub-tab Consultes (Anàlisi de Baixes) */
+.baixes-consulta-resp table { border-collapse: collapse; width: 100%; margin: 10px 0; font-size: 12px; }
+.baixes-consulta-resp th { background:#1a3d6e; color:#fff; padding:6px 8px; text-align:left; border:1px solid #b5b5b5; font-weight:bold; }
+.baixes-consulta-resp td { padding:5px 8px; border:1px solid #d1d5db; vertical-align:top; }
+.baixes-consulta-resp tr:nth-child(even) td { background:#fafbfc; }
+.baixes-consulta-resp h1 { font-size:16px; font-weight:bold; color:#1a3d6e; margin:14px 0 6px 0; }
+.baixes-consulta-resp h2 { font-size:14px; font-weight:bold; color:#1a3d6e; margin:12px 0 6px 0; }
+.baixes-consulta-resp h3 { font-size:13px; font-weight:bold; color:#1a3d6e; margin:10px 0 4px 0; }
+.baixes-consulta-resp h4 { font-size:12px; font-weight:bold; margin:8px 0 4px 0; }
+.baixes-consulta-resp ul { margin:6px 0 6px 20px; }
+.baixes-consulta-resp li { margin-bottom:2px; }
+.baixes-consulta-resp p { margin:6px 0; }
+.baixes-consulta-resp strong { color:#111; }
+
 /* Scrollbar visible i estilitzada per la taula del gestor */
 .gestor-table-wrap::-webkit-scrollbar,
 .overflow-x-auto::-webkit-scrollbar,

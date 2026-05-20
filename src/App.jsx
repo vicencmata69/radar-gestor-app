@@ -331,6 +331,38 @@ function validPubUrl(u){
     return s;
   }catch(e){return"";}
 }
+// Renderitza Markdown a HTML (taules, encapçalaments, negreta, llistes).
+// Usat per a la resposta IA de Consultes i per a l'informe de plecs.
+function mdToHtmlGlob(md){
+  if(!md)return"";
+  const lines=md.split('\n');const out=[];let inTable=false;
+  for(let i=0;i<lines.length;i++){
+    const line=lines[i].trim();
+    if(line.startsWith('|')&&line.endsWith('|')){
+      const cells=line.split('|').filter((_,j,a)=>j>0&&j<a.length-1).map(c=>c.trim());
+      if(!inTable){inTable=true;out.push('<table><thead><tr>'+cells.map(c=>'<th>'+c+'</th>').join('')+'</tr></thead><tbody>');
+        if(i+1<lines.length&&/^\|[\s\-:|]+\|$/.test(lines[i+1].trim()))i++;
+      }else{out.push('<tr>'+cells.map(c=>'<td>'+c+'</td>').join('')+'</tr>');}
+    }else{
+      if(inTable){inTable=false;out.push('</tbody></table>');}
+      out.push(line);
+    }
+  }
+  if(inTable)out.push('</tbody></table>');
+  return out.join('\n')
+    .replace(/####\s+(.+)/g,'<h4>$1</h4>')
+    .replace(/###\s+(.+)/g,'<h3>$1</h3>')
+    .replace(/##\s+(.+)/g,'<h2>$1</h2>')
+    .replace(/#\s+(.+)/g,'<h1>$1</h1>')
+    .replace(/\*\*(.+?)\*\*/g,'<strong>$1</strong>')
+    .replace(/\*(.+?)\*/g,'<em>$1</em>')
+    .replace(/^[-•]\s+(.+)/gm,'<li>$1</li>')
+    .replace(/(<li>.*<\/li>)/gs,m=>'<ul>'+m+'</ul>')
+    .replace(/<\/ul>\s*<ul>/g,'')
+    .replace(/\n{2,}/g,'</p><p>')
+    .replace(/\n/g,'<br>')
+    .replace(/^/,'<p>').replace(/$/,'</p>');
+}
 // Calcula la POSICIÓ final de cada oferta (1=guanyador) SEMPRE de manera
 // determinista, ignorant qualsevol "posicio" que pugui haver extret la IA
 // de l'acta (es manté en el JSON però no s'usa per fixar el rànquing). Així
@@ -1714,7 +1746,13 @@ Al final, ÚNICAMENT el JSON entre els marcadors exactes:
           adjudicatari:o.adjudicatari,temeraria:o.temeraria,es_servial:o.es_servial
         }))
       }));
-      const SYS=`Ets un analista de contractació pública especialista en obres. Tens accés a una base de dades d'actes d'obertura amb les empreses presentades, els imports oferts, les baixes (%) calculades, les puntuacions tècniques i les posicions finals. Respon les preguntes de l'usuari amb dades CONCRETES extretes únicament de les dades proporcionades — mai inventis xifres. Utilitza taules markdown quan ajudin a comparar. Sigues concís però complet. Si la pregunta no es pot respondre amb les dades, digues-ho clarament. Idioma: català.`;
+      const SYS=`Ets un analista de contractació pública especialista en obres. Tens accés a una base de dades d'actes d'obertura amb les empreses presentades, els imports oferts, les baixes calculades, les puntuacions tècniques i les posicions finals. NORMES OBLIGATÒRIES:
+1. Respon SEMPRE en català.
+2. Les xifres han de ser EXACTES (només les que apareixen a les dades, mai inventades).
+3. Quan una pregunta impliqui referenciar actes/concursos, OBLIGATÒRIAMENT presenta una taula markdown amb aquestes columnes mínimes: Data · Concurs · Organisme · Tipologia · Import licitació · [columnes específiques segons la pregunta] · Posició · Estat. Una fila per cada acta rellevant.
+4. NO ometis context: la resposta ha d'incloure el nom del concurs, l'organisme i l'import de licitació de cada acta esmentada — l'usuari no ha de buscar res a banda.
+5. Després de la taula, afegeix sota un resum breu en negreta amb mitjanes, totals o conclusió.
+6. Si la pregunta no es pot respondre amb les dades proporcionades, digues-ho clarament i indica quina dada falta.`;
       const PROMPT=`BASE DE DADES (${dades.length} acta${dades.length===1?"":"s"} d'obertura, format JSON):
 \`\`\`json
 ${JSON.stringify(dades,null,1)}
@@ -1723,7 +1761,7 @@ ${JSON.stringify(dades,null,1)}
 PREGUNTA DE L'USUARI:
 ${consultaQ.trim()}
 
-Respon en català, amb taula markdown si ajuda. Si cal, fes mitjanes, ordenacions o filtres mentalment a partir de les dades.`;
+Respon en català. Usa SEMPRE taula markdown amb les columnes Data · Concurs · Organisme · Tipologia · Import licitació · Posició · Estat (i les columnes específiques que demani la pregunta, ex: Baixa%, P.Tèc, Import ofertat). Mai resumeixis només amb text si la resposta involucra més d'un acta o més d'una xifra. Tanca amb una línia de resum.`;
       const r=await callAI(SYS,[{type:"text",text:PROMPT}],4000,aiProvider);
       if(!r)throw new Error("La IA no ha retornat resposta.");
       setConsultaResp(r);
@@ -1924,7 +1962,7 @@ Respon en català, amb taula markdown si ajuda. Si cal, fes mitjanes, ordenacion
         </div>
         {consultaResp&&<div className="bg-stone-50 border-2 border-blue-200 rounded-xl p-4">
           <div className="text-xs text-gray-400 mb-2">Resposta:</div>
-          <div className="text-sm text-gray-800 leading-relaxed whitespace-pre-wrap" style={{fontFamily:"Arial, Helvetica, sans-serif"}}>{consultaResp}</div>
+          <div className="baixes-consulta-resp text-sm text-gray-800 leading-relaxed" style={{fontFamily:"Arial, Helvetica, sans-serif"}} dangerouslySetInnerHTML={{__html:mdToHtmlGlob(consultaResp)}}/>
         </div>}
         {!actes.length&&<div className="bg-amber-50 border border-amber-300 rounded-xl p-3 text-xs text-amber-800">Encara no hi ha actes a la base de dades. Puja-les des de "📥 Pujar acta" per poder consultar.</div>}
       </div>}
