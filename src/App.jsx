@@ -331,15 +331,14 @@ function validPubUrl(u){
     return s;
   }catch(e){return"";}
 }
-// Calcula la POSICIÓ final de cada oferta (1=guanyador). Híbrid:
-//   - Si TOTES les ofertes ja porten "posicio" explícita (extreta per la IA
-//     de l'acta), es respecta i no es toca res.
-//   - Altrament, es deriva: amb tècnica → per puntuacio_total desc; sense
-//     tècnica → per baixa% desc, amb temeràries empeses al final.
+// Calcula la POSICIÓ final de cada oferta (1=guanyador) SEMPRE de manera
+// determinista, ignorant qualsevol "posicio" que pugui haver extret la IA
+// de l'acta (es manté en el JSON però no s'usa per fixar el rànquing). Així
+// el criteri és uniforme per a totes les actes.
+//   - Amb tècnica → ordena per puntuacio_total desc (desempat: import asc).
+//   - Sense tècnica → per baixa% desc, amb temeràries empeses al final.
 function calcPosicions(ofertes, teTecnica){
   if(!Array.isArray(ofertes)||!ofertes.length)return ofertes||[];
-  const totesAmbPos = ofertes.every(o => o.posicio!=null && Number(o.posicio)>0);
-  if (totesAmbPos) return ofertes;
   // Indexem per preservar l'ordre original visual
   const tmp = ofertes.map((o,i)=>({o,i}));
   if (teTecnica) {
